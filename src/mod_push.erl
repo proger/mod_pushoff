@@ -326,7 +326,7 @@ add_backends(Host) ->
     lists:foreach(
         fun({Backend, AuthData}) ->
             RegisterHost = Backend#push_backend.register_host,
-            ejabberd_router:register_route(RegisterHost),
+            %ejabberd_router:register_route(RegisterHost),
             ejabberd_hooks:add(adhoc_local_commands, RegisterHost, ?MODULE, process_adhoc_command, 75),
             ?INFO_MSG("added adhoc command handler for app server ~p",
                       [RegisterHost]),
@@ -551,7 +551,7 @@ stop(Host) ->
         mnesia:foldl(
             fun(Backend) ->
                 RegHost = Backend#push_backend.register_host,
-                ejabberd_router:unregister_route(RegHost),
+                %ejabberd_router:unregister_route(RegHost),
                 ejabberd_hooks:delete(adhoc_local_commands, RegHost, ?MODULE, process_adhoc_command, 75),
                 {Local, Remote} =
                 lists:partition(fun(N) -> N =:= node() end,
