@@ -22,19 +22,6 @@ ejabberdctl modules_available
 ejabberdctl module_install mod_push 
 ```
 
-## Tinkering
-
-Removing mod_push state:
-
-```bash
-ejabberdctl debug
-mnesia:clear_table(pubsub_node).
-mnesia:clear_table(pubsub_state).
-mnesia:clear_table(pubsub_index).
-mnesia:clear_table(pubsub_subscription).
-mnesia:clear_table(pubsub_item).
-```
-
 ###XEP-0357 configuration
 
 ####User-definable options
