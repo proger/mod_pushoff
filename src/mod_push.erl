@@ -180,7 +180,7 @@
 
 %-------------------------------------------------------------------------
 
--spec(register_client/7 ::
+-spec(register_client
 (
     User :: jid(),
     RegisterHost :: binary(),
@@ -264,7 +264,7 @@ register_client(#jid{luser = LUser,
 
 %% Callback for workers
 
--spec(unregister_client/1 ::
+-spec(unregister_client
 (
     Args :: {binary(), erlang:timestamp()})
     -> error | {error, xmlelement()} | {unregistered, ok} |
@@ -281,7 +281,7 @@ unregister_client({Node, Timestamp}) ->
 %% If both device ID and node list are given, the device_id will be ignored and
 %% only registrations matching a node ID in the given list will be removed.
 
--spec(unregister_client/3 ::
+-spec(unregister_client
 (
     Jid :: jid(),
     DeviceId :: binary(),
@@ -295,7 +295,7 @@ unregister_client(Jid, DeviceId, NodeIds) ->
 
 %-------------------------------------------------------------------------
 
--spec(unregister_client/4 ::
+-spec(unregister_client
 (
     UserJid :: jid(),
     DeviceId :: binary(),
@@ -429,7 +429,7 @@ unregister_client(UserJid, DeviceId, Timestamp, Nodes) ->
                                          
 %-------------------------------------------------------------------------
 
--spec(enable/4 ::
+-spec(enable
 (
     UserJid :: jid(),
     PubsubJid :: jid(),
@@ -522,7 +522,7 @@ enable(#jid{luser = LUser, lserver = LServer, lresource = LResource},
                 
 %-------------------------------------------------------------------------
 
--spec(disable/3 ::
+-spec(disable
 (
     From :: jid(),
     PubsubJid :: jid(),
@@ -534,7 +534,7 @@ disable(From, PubsubJid, Node) -> disable(From, PubsubJid, Node, false).
 
 %-------------------------------------------------------------------------
 
--spec(disable/4 ::
+-spec(disable
 (
     From :: jid(),
     PubsubJid :: jid(),
@@ -571,7 +571,7 @@ disable(#jid{luser = LUser, lserver = LServer},
        
 %-------------------------------------------------------------------------
 
--spec(delete_subscriptions/3 ::
+-spec(delete_subscriptions
 (
     BareJid :: bare_jid(),
     SubscriptionPred :: fun((subscription()) -> boolean()),
@@ -627,7 +627,7 @@ delete_subscriptions({LUser, LServer}, SubscriptionPred, StopSessions) ->
 
 %-------------------------------------------------------------------------
 
--spec(list_registrations/1 ::
+-spec(list_registrations
 (jid()) -> {error, xmlelement()} | {registrations, [push_registration()]}).
 
 list_registrations(#jid{luser = LUser, lserver = LServer}) ->
@@ -642,7 +642,7 @@ list_registrations(#jid{luser = LUser, lserver = LServer}) ->
 
 %-------------------------------------------------------------------------
 
--spec(on_store_stanza/3 ::
+-spec(on_store_stanza
 (
     Acc :: any(),
     To :: jid(),
@@ -671,7 +671,7 @@ on_store_stanza(RerouteFlag, To, Stanza) ->
                                       
 %-------------------------------------------------------------------------
 
--spec(dispatch/3 ::
+-spec(dispatch
 (
     Stanzas :: [{erlang:timestamp(), xmlelement(), boolean()}],
     UserJid :: jid(),
@@ -728,7 +728,7 @@ dispatch(Stanzas, UserJid, SetPending) ->
                                             
 %-------------------------------------------------------------------------
 
--spec(do_dispatch/4 ::
+-spec(do_dispatch
 (
     RegType :: reg_type(),
     UserBare :: bare_jid(),
@@ -777,7 +777,7 @@ do_dispatch({remote_reg, PubsubHost, Secret}, UserBare, NodeId, Payload) ->
 
 %-------------------------------------------------------------------------
 
--spec(do_dispatch_local/8 ::
+-spec(do_dispatch_local
 (
     UserBare :: bare_jid(),
     Payload :: payload(),
@@ -821,7 +821,7 @@ do_dispatch_local(UserBare, Payload, Token, AppId, BackendId, Node, Timestamp,
            
 %-------------------------------------------------------------------------
 
--spec(do_dispatch_remote/5 ::
+-spec(do_dispatch_remote
 (
     UserBare :: bare_jid(),
     PubsubJid :: jid(),
@@ -875,7 +875,7 @@ do_dispatch_remote({User, Server}, PubsubJid, Node, Payload, Secret) ->
 
 %-------------------------------------------------------------------------
 
--spec(on_unset_presence/4 ::
+-spec(on_unset_presence
 (
     User :: binary(),
     Server :: binary(),
@@ -895,7 +895,7 @@ on_unset_presence(User, Server, Resource, _Status) ->
 
 %-------------------------------------------------------------------------
 
--spec(resend_packets/1 :: (Jid :: jid()) -> ok).
+-spec(resend_packets (Jid :: jid()) -> ok).
 
 resend_packets(Jid) ->
     F = fun() ->
@@ -919,7 +919,7 @@ resend_packets(Jid) ->
 
 %-------------------------------------------------------------------------
 
--spec(on_remove_user/2 :: (User :: binary(), Server :: binary()) -> ok).
+-spec(on_remove_user (User :: binary(), Server :: binary()) -> ok).
 
 on_remove_user(User, Server) ->
     F = fun() ->
@@ -938,7 +938,7 @@ on_remove_user(User, Server) ->
 
 %-------------------------------------------------------------------------
 
--spec(on_affiliation_removal/5 ::
+-spec(on_affiliation_removal
 (
     Packet :: xmlelement(),
     State :: term(),
@@ -1004,7 +1004,7 @@ on_affiliation_removal(Stanza, _C2SState, _Jid, _From, _To) -> Stanza.
         
 %-------------------------------------------------------------------------
 
--spec(on_wait_for_resume/3 ::
+-spec(on_wait_for_resume
 (
     Timeout :: integer(),
     jid(),
@@ -1029,7 +1029,7 @@ on_wait_for_resume(Timeout, User, UnackedStanzas) ->
 
 %-------------------------------------------------------------------------
 
--spec(on_resume_session/1 ::
+-spec(on_resume_session
 (
     User :: jid())
     -> any()
@@ -1052,7 +1052,7 @@ on_resume_session(#jid{luser = LUser, lserver = LServer, lresource = LResource}
 
 %-------------------------------------------------------------------------
 
--spec(incoming_notification/4 ::
+-spec(incoming_notification
 (
     _HookAcc :: any(),
     Node :: binary(),
@@ -1153,7 +1153,7 @@ incoming_notification(_HookAcc, Node, [#xmlel{name = <<"notification">>,
 
 %-------------------------------------------------------------------------
 
--spec(check_secret/2 ::
+-spec(check_secret
 (
     Secret :: binary(),
     Opts :: [any()])
@@ -1168,7 +1168,7 @@ check_secret(Secret, PubOpts) ->
 
 %-------------------------------------------------------------------------
 
--spec(add_backends/1 ::
+-spec(add_backends
 (
     Host :: binary())
     -> ok | error
@@ -1207,7 +1207,7 @@ add_backends(Host) ->
     
 %-------------------------------------------------------------------------
 
--spec(add_disco_hooks/1 ::
+-spec(add_disco_hooks
 (
     ServerHost :: binary())
     -> any()
@@ -1245,7 +1245,7 @@ add_disco_hooks(ServerHost) ->
 
 %-------------------------------------------------------------------------
 
--spec(start_worker/2 ::
+-spec(start_worker
 (
     Backend :: push_backend(),
     AuthData :: auth_data())
@@ -1273,7 +1273,7 @@ start_worker(#push_backend{worker = Worker, type = Type},
 
 %-------------------------------------------------------------------------
 
--spec(notify_previous_users/1 :: (Host :: binary()) -> ok).
+-spec(notify_previous_users (Host :: binary()) -> ok).
 
 notify_previous_users(Host) ->
     MatchHead = #push_user{bare_jid = {'_', Host}, _='_'},
@@ -1300,7 +1300,7 @@ notify_previous_users(Host) ->
 
 %-------------------------------------------------------------------------
 
--spec(process_adhoc_command/4 ::
+-spec(process_adhoc_command
 (
     Acc :: any(),
     From :: jid(),
@@ -1511,7 +1511,7 @@ process_adhoc_command(Acc, _From, _To, _Request) ->
      
 %-------------------------------------------------------------------------
 
--spec(process_iq/3 ::
+-spec(process_iq
 (
     From :: jid(),
     _To :: jid(),
@@ -1569,7 +1569,7 @@ process_iq(From, _To, #iq{type = Type, sub_el = SubEl} = IQ) ->
                     
 %-------------------------------------------------------------------------
 
--spec(on_disco_sm_features/5 ::
+-spec(on_disco_sm_features
 (
     Acc :: any(),
     _From :: jid(),
@@ -1639,7 +1639,7 @@ on_disco_pubsub_info(Acc, _, _, _, _) ->
 
 %%-------------------------------------------------------------------------
 
--spec(on_disco_reg_identity/5 ::
+-spec(on_disco_reg_identity
 (
     Acc :: [xmlelement()],
     _From :: jid(),
@@ -1708,7 +1708,7 @@ on_disco_sm_identity(Acc, _From, _To, _Node, _Lang) ->
 % gen_mod callbacks
 %-------------------------------------------------------------------------
 
--spec(start/2 ::
+-spec(start
 (
     Host :: binary(),
     Opts :: [any()])
@@ -1793,7 +1793,7 @@ start(Host, _Opts) ->
 
 %-------------------------------------------------------------------------
 
--spec(stop/1 ::
+-spec(stop
 (
     Host :: binary())
     -> any()
@@ -1876,7 +1876,7 @@ mod_opt_type(_) ->
 % mod_push utility functions
 %-------------------------------------------------------------------------
 
--spec(get_global_config/1 :: (Host :: binary()) -> user_config()).
+-spec(get_global_config (Host :: binary()) -> user_config()).
 
 get_global_config(Host) ->
     [{'include-senders',
@@ -1898,7 +1898,7 @@ get_global_config(Host) ->
 
 %-------------------------------------------------------------------------
 
--spec(make_config/3 ::
+-spec(make_config
 (
     XDataForms :: [xmlelement()],
     OldConfig :: user_config(),
@@ -1970,7 +1970,7 @@ make_config(XDataForms, OldConfig, ConfigPrivilege) ->
                     
 %-------------------------------------------------------------------------
 
--spec(parse_backends/2 ::
+-spec(parse_backends
 (
     BackendOpts :: [any()],
     DefaultCertFile :: binary())
@@ -2039,7 +2039,7 @@ get_backend_opts(RawOptsList) ->
 
 %-------------------------------------------------------------------------
 
--spec(make_payload/3 ::
+-spec(make_payload
 (
     UnackedStanzas :: [{erlang:timestamp(), xmlelement()}],
     StoredPayload :: payload(),
@@ -2122,7 +2122,7 @@ make_payload(UnackedStanzas, StoredPayload, Config) ->
 
 %-------------------------------------------------------------------------
 
--spec(filter_payload/2 ::
+-spec(filter_payload
 (
     Payload :: payload(),
     Config :: user_config())
@@ -2145,7 +2145,7 @@ filter_payload(Payload, Config) ->
 
 %-------------------------------------------------------------------------
 
--spec(set_pending/3 ::
+-spec(set_pending
 (
     Resource :: binary(),
     NewVal :: boolean(),
@@ -2167,14 +2167,14 @@ set_pending(Resource, NewVal, Subscrs) ->
 % general utility functions
 %-------------------------------------------------------------------------
 
--spec(is_local_domain/1 :: (Hostname :: binary()) -> boolean()).
+-spec(is_local_domain (Hostname :: binary()) -> boolean()).
 
 is_local_domain(Hostname) ->
     lists:member(Hostname, ejabberd_router:dirty_get_all_domains()).
 
 %-------------------------------------------------------------------------
 
--spec(remove_subdomain/1 :: (Hostname :: binary()) -> binary()).
+-spec(remove_subdomain (Hostname :: binary()) -> binary()).
 
 remove_subdomain(Hostname) ->
     Dots = binary:matches(Hostname, <<".">>),
@@ -2219,7 +2219,7 @@ get_xdata_elements([], Acc) ->
 
 %-------------------------------------------------------------------------
 
--spec(get_xdata_value/2 ::
+-spec(get_xdata_value
 (
     FieldName :: binary(),
     Fields :: [{binary(), [binary()]}])
@@ -2229,7 +2229,7 @@ get_xdata_elements([], Acc) ->
 get_xdata_value(FieldName, Fields) ->
     get_xdata_value(FieldName, Fields, undefined).
 
--spec(get_xdata_value/3 ::
+-spec(get_xdata_value
 (
     FieldName :: binary(),
     Fields :: [{binary(), [binary()]}],
@@ -2243,7 +2243,7 @@ get_xdata_value(FieldName, Fields, DefaultValue) ->
         _ -> error
     end.
 
--spec(get_xdata_values/2 ::
+-spec(get_xdata_values
 (
     FieldName :: binary(),
     Fields :: [{binary(), [binary()]}])
@@ -2253,7 +2253,7 @@ get_xdata_value(FieldName, Fields, DefaultValue) ->
 get_xdata_values(FieldName, Fields) ->
     get_xdata_values(FieldName, Fields, []).
 
--spec(get_xdata_values/3 ::
+-spec(get_xdata_values
 (
     FieldName :: binary(),
     Fields :: [{binary(), [binary()]}],
@@ -2266,7 +2266,7 @@ get_xdata_values(FieldName, Fields, DefaultValue) ->
     
 %-------------------------------------------------------------------------
 
--spec(parse_form/4 ::
+-spec(parse_form
 (
     [false | xmlelement()],
     FormType :: binary(),
@@ -2345,7 +2345,7 @@ parse_form([XDataForm|T], FormType, RequiredFields, OptionalFields) ->
 
 %-------------------------------------------------------------------------
 
--spec(make_config_form/1 :: (user_config()) -> [xmlelement()]).
+-spec(make_config_form (user_config()) -> [xmlelement()]).
 
 make_config_form(Opts) ->
     Fields =
@@ -2361,7 +2361,7 @@ make_config_form(Opts) ->
 
 %-------------------------------------------------------------------------
 
--spec(make_worker_name/2 ::
+-spec(make_worker_name
 (
     RegisterHost :: binary(),
     Type :: atom())
@@ -2373,7 +2373,7 @@ make_worker_name(RegisterHost, Type) ->
 
 %-------------------------------------------------------------------------
 
--spec(boolean_to_binary/1 :: (Bool :: boolean()) -> binary()).
+-spec(boolean_to_binary (Bool :: boolean()) -> binary()).
 
 boolean_to_binary(Bool) ->
     case Bool of
@@ -2381,7 +2381,7 @@ boolean_to_binary(Bool) ->
         false -> <<"0">>
     end.
 
--spec(binary_to_boolean/2 ::
+-spec(binary_to_boolean
 (
     Binary :: binary(),
     DefaultResult :: any())
@@ -2391,7 +2391,7 @@ boolean_to_binary(Bool) ->
 binary_to_boolean(Binary, DefaultResult) ->
     binary_to_boolean(Binary, DefaultResult, error).
 
--spec(binary_to_boolean/3 ::
+-spec(binary_to_boolean
 (
     Binary :: binary(),
     DefaultResult :: any(),
@@ -2411,7 +2411,7 @@ binary_to_boolean(Binary, DefaultResult, InvalidResult) ->
 
 %-------------------------------------------------------------------------
 
--spec(ljid_to_jid/1 ::
+-spec(ljid_to_jid
 (
     ljid())
     -> jid()
