@@ -30,12 +30,10 @@
 
 -behaviour(gen_mod).
 
--export([start/2, stop/1,
+-export([start/2, stop/1, depends/2,
          mod_opt_type/1,
          get_backend_opts/1,
-         process_iq/3,
-         on_store_stanza/3,
-         on_affiliation_removal/5,
+         on_offline_message/3,
          on_remove_user/2,
          process_adhoc_command/4,
          unregister_client/1,
@@ -48,16 +46,14 @@
 -define(MODULE_APNS, mod_push_apns).
 
 -define(NS_PUSH, <<"urn:xmpp:push:0">>).
--define(NS_PUSH_SUMMARY, <<"urn:xmpp:push:summary">>).
--define(NS_PUSH_OPTIONS, <<"urn:xmpp:push:options">>).
--define(NS_PUBLISH_OPTIONS,
-        <<"http://jabber.org/protocol/pubsub#publish-options">>).
 
 -define(INCLUDE_SENDERS_DEFAULT, false).
 -define(INCLUDE_MSG_COUNT_DEFAULT, true).
 -define(INCLUDE_SUBSCR_COUNT_DEFAULT, true).
 -define(INCLUDE_MSG_BODIES_DEFAULT, false).
 -define(SILENT_PUSH_DEFAULT, true).
+
+-define(OFFLINE_HOOK_PRIO, 1). % must fire before mod_offline (which has 50)
 
 -define(MAX_INT, 4294967295).
 -define(ADJUSTED_RESUME_TIMEOUT, 100*24*60*60).
@@ -298,51 +294,6 @@ unregister_client(undefined, undefined, _, []) -> error;
 unregister_client(undefined, <<"">>, _, []) -> error;
 
 unregister_client(UserJid, DeviceId, Timestamp, Nodes) ->
-    DisableIfLocal =
-    fun(#push_registration{node = Node,
-                           bare_jid = {User, Server},
-                           backend_id = BackendId}) ->
-        MatchHeadBackend =
-        #push_backend{id = BackendId, pubsub_host = '$1', _='_'},
-        Selected =
-        mnesia:select(push_backend, [{MatchHeadBackend, [], ['$1']}]),
-        case Selected of
-            [] -> ?DEBUG("++++ Backend does not exist!", []);
-            [PubsubHost] ->
-                PubsubJid = ljid_to_jid({<<"">>, PubsubHost, <<"">>}),
-                UserBareJid = ljid_to_jid({User, Server, <<"">>}),
-                case is_local_domain(Server) of
-                    false ->
-                        PubsubNotification =
-                        #xmlel{
-                            name = <<"pubsub">>,
-                            attrs = [{<<"xmlns">>, ?NS_PUBSUB}],
-                            children =
-                            [#xmlel{
-                                name = <<"affiliations">>,
-                                attrs = [{<<"node">>, Node}],
-                                children =
-                                [#xmlel{
-                                    name = <<"affiliation">>,
-                                    attrs = [{<<"jid">>,
-                                              jlib:jid_to_string(UserBareJid)},
-                                             {<<"affiliation">>,
-                                              <<"none">>}]}]}]},
-                        PubsubMessage =
-                        #xmlel{
-                           name = <<"message">>,
-                           attrs = [],
-                           children = [PubsubNotification]},
-                        ejabberd_router:route(
-                            PubsubJid,
-                            UserBareJid,
-                            PubsubMessage);
-
-                    true ->
-                        disable(UserBareJid, PubsubJid, Node, true)
-                end
-        end
-    end,
     F = fun() ->
         case Nodes of
             [] ->
@@ -369,7 +320,6 @@ unregister_client(UserJid, DeviceId, Timestamp, Nodes) ->
                                [Reg#push_registration.bare_jid,
                                 Reg#push_registration.node]),
                         mnesia:delete_object(Reg),
-                        DisableIfLocal(Reg),
                         ok
                 end;
 
@@ -392,7 +342,6 @@ unregister_client(UserJid, DeviceId, Timestamp, Nodes) ->
                                 case UserOk of
                                     true ->
                                         mnesia:delete_object(Reg),
-                                        DisableIfLocal(Reg),
                                         [Node|Acc];
                                     false -> [error|Acc]
                                 end
@@ -416,201 +365,57 @@ unregister_client(UserJid, DeviceId, Timestamp, Nodes) ->
                                          
 %-------------------------------------------------------------------------
 
--spec(enable
-(
-    UserJid :: jid(),
-    PubsubJid :: jid(),
-    Node :: binary(),
-    XData :: [false | xmlelement()])
-    -> {error, xmlelement()} | {enabled, ok} | {enabled, [xmlelement()]}
-).
-
-enable(_UserJid, _PubsubJid, undefined, _XDataForms) ->
-    {error, ?ERR_NOT_ACCEPTABLE};
-
-enable(_UserJid, _PubsubJid, <<"">>, _XDataForms) ->
-    {error, ?ERR_NOT_ACCEPTABLE};
-
-enable(#jid{luser = LUser, lserver = LServer, lresource = LResource},
-       #jid{lserver = PubsubHost} = PubsubJid, Node, XDataForms) ->
-    ParsedSecret =
-    parse_form(XDataForms, ?NS_PUBLISH_OPTIONS, [], [{single, <<"secret">>}]),
-    ?DEBUG("+++++ ParsedSecret = ~p", [ParsedSecret]),
-    Secret = case ParsedSecret of
-        not_found -> undefined; 
-        error -> error;
-        {result, [S]} -> S
-    end,
-    case Secret of
-        error -> {error, ?ERR_BAD_REQUEST}; 
-        _ ->
-            F = fun() ->
+do_enable(#jid{luser = LUser, lserver = LServer, lresource = LResource},
+          #jid{lserver = PubsubHost} = PubsubJid, Node, XDataForms, Secret) ->
+    F = fun() ->
                 MatchHeadBackend =
-                #push_backend{id = '$1', pubsub_host = PubsubHost, _='_'},
+                    #push_backend{id = '$1', pubsub_host = PubsubHost, _='_'},
                 RegType =
-                case mnesia:select(push_backend, [{MatchHeadBackend, [], ['$1']}]) of
-                    [] -> {remote_reg, PubsubJid, Secret};
-                    _ -> {local_reg, PubsubHost, Secret}
-                end,
+                    case mnesia:select(push_backend, [{MatchHeadBackend, [], ['$1']}]) of
+                        [] -> {remote_reg, PubsubJid, Secret};
+                        _ -> {local_reg, PubsubHost, Secret}
+                    end,
                 Subscr =
-                #subscription{resource = LResource,
-                              node = Node,
-                              reg_type = RegType},
+                    #subscription{resource = LResource,
+                                  node = Node,
+                                  reg_type = RegType},
                 case mnesia:read({push_user, {LUser, LServer}}) of
                     [] ->
                         ?DEBUG("+++++ enable: no user found!", []),
-                        GConfig = get_global_config(LServer),
-                        case make_config(XDataForms, GConfig, enable_disable) of
-                            error -> error;
-                            {Config, ChangedOpts} ->
-                                %% NewUser will have empty payload
-                                NewUser =
-                                #push_user{bare_jid = {LUser, LServer},
-                                           subscriptions = [Subscr],
-                                           config = Config},
-                                mnesia:write(NewUser),
-                                make_config_form(ChangedOpts)
-                        end;
-                    
-                    [#push_user{subscriptions = Subscriptions,
-                                config = OldConfig}] ->
-                        ?DEBUG("+++++ enable: found user, config = ~p", [OldConfig]),
-                        case make_config(XDataForms, OldConfig, disable_only) of
-                            error -> error;
-                            {Config, ChangedOpts} -> 
-                                FilterNode =
-                                fun
-                                    (S) when S#subscription.node =:= Node;
-                                             S#subscription.resource =:= LResource ->
-                                        false;
-                                    (_) -> true
-                                end,
-                                NewSubscriptions =
-                                [Subscr|lists:filter(FilterNode, Subscriptions)],
-                                %% NewUser will have empty payload
-                                NewUser =
-                                #push_user{bare_jid = {LUser, LServer},
-                                           subscriptions = NewSubscriptions,
-                                           config = Config},
-                                mnesia:write(NewUser),
-                                make_config_form(ChangedOpts)
-                        end
+                        %% NewUser will have empty payload
+                        NewUser =
+                            #push_user{bare_jid = {LUser, LServer},
+                                       subscriptions = [Subscr],
+                                       config = []},
+                        mnesia:write(NewUser);
+
+                    [#push_user{subscriptions = Subscriptions}] ->
+                        ?DEBUG("+++++ enable: found user", []),
+                        FilterNode =
+                            fun
+                                (S) when S#subscription.node =:= Node;
+                                         S#subscription.resource =:= LResource ->
+                                    false;
+                                (_) -> true
+                            end,
+                        NewSubscriptions =
+                            [Subscr|lists:filter(FilterNode, Subscriptions)],
+                        %% NewUser will have empty payload
+                        NewUser =
+                            #push_user{bare_jid = {LUser, LServer},
+                                       subscriptions = NewSubscriptions,
+                                       config = []},
+                        mnesia:write(NewUser)
                 end
-            end,
-            case mnesia:transaction(F) of
-                {aborted, Reason} ->
-                    ?DEBUG("+++++ enable transaction aborted: ~p", [Reason]),
-                    {error, ?ERR_INTERNAL_SERVER_ERROR};
-                {atomic, error} -> {error, ?ERR_NOT_ACCEPTABLE};
-                {atomic, []} -> {enabled, ok};
-                {atomic, ResponseForm} -> {enabled, ResponseForm}
-            end
+        end,
+    case mnesia:transaction(F) of
+        {aborted, Reason} ->
+            ?DEBUG("+++++ enable transaction aborted: ~p", [Reason]),
+            {error, ?ERR_INTERNAL_SERVER_ERROR};
+        {atomic, error} -> {error, ?ERR_NOT_ACCEPTABLE};
+        {atomic, []} -> {enabled, ok};
+        {atomic, ResponseForm} -> {enabled, ResponseForm}
     end.
-                
-%-------------------------------------------------------------------------
-
--spec(disable
-(
-    From :: jid(),
-    PubsubJid :: jid(),
-    Node :: binary())
-    -> {error, xmlelement()} | {disabled, ok} 
-).
-
-disable(From, PubsubJid, Node) -> disable(From, PubsubJid, Node, false).
-
-%-------------------------------------------------------------------------
-
--spec(disable
-(
-    From :: jid(),
-    PubsubJid :: jid(),
-    Node :: binary(),
-    StopSessions :: boolean())
-    -> {error, xmlelement()} | {disabled, ok} 
-).
-
-disable(_From, _PubsubJid, <<"">>, _StopSessions) ->
-    {error, ?ERR_NOT_ACCEPTABLE};
-
-disable(#jid{luser = LUser, lserver = LServer},
-        #jid{lserver = PubsubHost} = PubsubJid, Node, StopSessions) ->
-    SubscrPred =
-    fun
-        (#subscription{node = N, reg_type = RegT}) ->
-            NodeMatching =
-            (Node =:= undefined) or (Node =:= N),
-            RegTypeMatching =
-            case RegT of
-                {local_reg, P, _} -> P =:= PubsubHost;
-                {remote_reg, J, _} ->
-                    (J#jid.luser =:= PubsubJid#jid.luser) and
-                    (J#jid.lserver =:= PubsubJid#jid.lserver) and
-                    (J#jid.lresource =:= PubsubJid#jid.lresource)
-            end,
-            NodeMatching and RegTypeMatching
-    end,
-    case delete_subscriptions({LUser, LServer}, SubscrPred, StopSessions) of
-        {aborted, _} -> {error, ?ERR_INTERNAL_SERVER_ERROR};
-        {atomic, error} -> {error, ?ERR_ITEM_NOT_FOUND};
-        {atomic, ok} -> {disabled, ok}
-    end.
-       
-%-------------------------------------------------------------------------
-
--spec(delete_subscriptions
-(
-    BareJid :: bare_jid(),
-    SubscriptionPred :: fun((subscription()) -> boolean()),
-    StopSessions :: boolean())
-    -> {aborted, any()} | {atomic, error} | {atomic, ok}
-).
-
-delete_subscriptions({LUser, LServer}, SubscriptionPred, StopSessions) ->
-    MaybeStopSession = fun(Subscription) ->
-        case Subscription#subscription.pending of
-            false -> ok;
-            true ->
-                Pid =
-                ejabberd_sm:get_session_pid(LUser, LServer,
-                                            Subscription#subscription.resource),
-                case Pid of
-                    P when is_pid(P) ->
-                        %% FIXME: replace by P ! stop
-                        P ! kick; 
-                    _ ->
-                        ?DEBUG("++++ Didn't find PID for ~p@~p/~p",
-                               [LUser, LServer, Subscription#subscription.resource])
-                end
-        end
-    end,
-    F = fun() ->
-        case mnesia:read({push_user, {LUser, LServer}}) of
-            [] -> error;
-            [#push_user{subscriptions = Subscriptions} = User] ->
-                {MatchingSubscrs, NotMatchingSubscrs} =
-                lists:partition(SubscriptionPred, Subscriptions),
-                case MatchingSubscrs of
-                    [] -> error;
-                    _ ->
-                        ?DEBUG("+++++ Deleting subscriptions for user ~p@~p", [LUser, LServer]),
-                        case StopSessions of
-                            false -> ok;
-                            true ->
-                                lists:foreach(MaybeStopSession, MatchingSubscrs)
-                        end,
-                        case NotMatchingSubscrs of
-                            [] ->
-                                mnesia:delete({push_user, {LUser, LServer}});
-                            _ ->
-                                UpdatedUser =
-                                User#push_user{subscriptions = NotMatchingSubscrs},
-                                mnesia:write(UpdatedUser)
-                        end
-                end
-        end
-    end,
-    mnesia:transaction(F).
 
 %-------------------------------------------------------------------------
 
@@ -629,33 +434,20 @@ list_registrations(#jid{luser = LUser, lserver = LServer}) ->
 
 %-------------------------------------------------------------------------
 
--spec(on_store_stanza
-(
-    Acc :: any(),
-    To :: jid(),
-    Stanza :: xmlelement())
-    -> any()
-).
+-spec(on_offline_message(From :: jid(), To :: jid(), Stanza :: xmlelement()) -> any()).
 
-%% called on hook mgmt_queue_add_hook
-on_store_stanza(RerouteFlag, To, Stanza) ->
-    ?DEBUG("++++++++++++ Stored Stanza for ~p: ~p",
-           [To, Stanza]),
+on_offline_message(_From, To, Stanza) ->
     F = fun() -> dispatch([{now(), Stanza}], To, false) end,
     case mnesia:transaction(F) of
-        {atomic, not_subscribed} -> RerouteFlag;
-        
-        {atomic, ok} ->
-            case RerouteFlag of
-                true -> false_on_system_shutdown;
-                _ -> RerouteFlag
-            end;
-
+        {atomic, ok} -> ok;
+        {atomic, not_subscribed} ->
+            ?DEBUG("+++++ mod_push offline: ~p is not_subscribed", [To]),
+            ok;
         {aborted, Error} ->
-            ?DEBUG("+++++ error in on_store_stanza: ~p", [Error]),
-            RerouteFlag
+            ?DEBUG("+++++ error in on_offline_message: ~p", [Error]),
+            ok
     end.
-                                      
+
 %-------------------------------------------------------------------------
 
 -spec(dispatch
@@ -754,12 +546,7 @@ do_dispatch({local_reg, _, Secret}, UserBare, NodeId, Payload) ->
                               "user-provided node belongs to another user",
                               [UserBare]) 
             end
-    end;
-
-do_dispatch({remote_reg, PubsubHost, Secret}, UserBare, NodeId, Payload) ->
-    ?DEBUG("++++ do_dispatch: dispatching remotely", []),
-    do_dispatch_remote(UserBare, PubsubHost, NodeId, Payload, Secret),
-    ok.
+    end.
 
 %-------------------------------------------------------------------------
 
@@ -807,60 +594,6 @@ do_dispatch_local(UserBare, Payload, Token, AppId, BackendId, Node, Timestamp,
            
 %-------------------------------------------------------------------------
 
--spec(do_dispatch_remote
-(
-    UserBare :: bare_jid(),
-    PubsubJid :: jid(),
-    Node :: binary(),
-    Payload :: payload(),
-    Secret :: binary())
-    -> any()
-).
-
-do_dispatch_remote({User, Server}, PubsubJid, Node, Payload, Secret) ->
-    MakeKey = fun(Atom) -> atom_to_binary(Atom, utf8) end,
-    Fields =
-    lists:foldl(
-        fun
-        ({Key, Value}, Acc) when is_binary(Value) ->
-            [?VFIELD(MakeKey(Key), Value)|Acc];
-
-        ({Key, Value}, Acc) when is_integer(Value) ->
-            [?VFIELD(MakeKey(Key), integer_to_binary(Value))|Acc]
-        end,
-        [?HFIELD(?NS_PUSH_SUMMARY)],
-        Payload),
-    Notification =
-    #xmlel{name = <<"notification">>, attrs = [{<<"xmlns">>, ?NS_PUSH}],
-           children =
-           [#xmlel{name = <<"x">>,
-                   attrs = [{<<"xmlns">>, ?NS_XDATA}, {<<"type">>, <<"submit">>}],
-                   children = Fields}]},
-    PubOpts =
-    case is_binary(Secret) of
-        true ->
-            [#xmlel{name = <<"publish-options">>,
-                    children =
-                    [#xmlel{name = <<"x">>,
-                            attrs = [{<<"xmlns">>, ?NS_XDATA},
-                                     {<<"type">>, <<"submit">>}],
-                            children = [?HFIELD(?NS_PUBLISH_OPTIONS),
-                                        ?VFIELD(<<"secret">>, Secret)]}]}];
-        false -> []
-    end,
-    Iq =
-    #xmlel{name = <<"iq">>, attrs = [{<<"type">>, <<"set">>}],
-        children =
-        [#xmlel{name = <<"pubsub">>, attrs = [{<<"xmlns">>, ?NS_PUBSUB}],
-                children =
-                [#xmlel{name = <<"publish">>, attrs = [{<<"node">>, Node}],
-                        children =
-                        [#xmlel{name = <<"item">>,
-                                children = [Notification]}]}] ++ PubOpts}]},
-    ejabberd_router:route(ljid_to_jid({User, Server, <<"">>}), PubsubJid, Iq).
-
-%-------------------------------------------------------------------------
-
 -spec(on_remove_user (User :: binary(), Server :: binary()) -> ok).
 
 on_remove_user(User, Server) ->
@@ -877,72 +610,6 @@ on_remove_user(User, Server) ->
         end
     end,
     mnesia:transaction(F).
-
-%-------------------------------------------------------------------------
-
--spec(on_affiliation_removal
-(
-    Packet :: xmlelement(),
-    State :: term(),
-    _User :: jid(),
-    From :: jid(),
-    To :: jid())
-    -> xmlelement()
-).
-
-on_affiliation_removal(#xmlel{name = <<"message">>, children = Children} = Stanza,
-                       _C2SState, User, From, _To) ->
-    FindNodeAffiliations =
-    fun 
-    F([#xmlel{name = <<"pubsub">>, attrs = Attrs, children = PChildr}|T]) ->
-        case proplists:get_value(<<"xmlns">>, Attrs) of
-            ?NS_PUBSUB ->
-                case PChildr of
-                    [#xmlel{name = <<"affiliations">>} = A] ->
-                        case proplists:get_value(<<"node">>, A#xmlel.attrs) of
-                            undefined -> error;
-                            Node -> {Node, A#xmlel.children}
-                        end;
-                    _ -> not_found
-                end;
-            _ -> F(T)
-        end;
-    F([_|T]) -> F(T);
-    F([]) -> not_found
-    end,
-    FindJid =
-    fun
-    F([#xmlel{name = <<"affiliation">>, attrs = Attrs}|T]) ->
-        case proplists:get_value(<<"affiliation">>, Attrs) of
-            <<"none">> ->
-                case proplists:get_value(<<"jid">>, Attrs) of
-                    J when is_binary(J) -> jlib:string_to_jid(J);
-                    _ -> error
-                end;
-            undefined -> F(T)
-        end;
-    F([_|T]) -> F(T);
-    F([]) -> not_found
-    end,
-    ErrMsg =
-    fun() ->
-        ?INFO_MSG("Received invalid affiliation removal notification from ~p",
-                  [jlib:jid_to_string(From)])
-    end,
-    case FindNodeAffiliations(Children) of
-        not_found -> ok;
-        error -> ErrMsg();
-        {Node, Affiliations} ->
-            BareUserJid = jlib:jid_remove_resource(jlib:jid_tolower(User)),
-            case FindJid(Affiliations) of
-                not_found -> ok;
-                BareUserJid -> disable(BareUserJid, From, Node, true);
-                _ -> ErrMsg()
-            end
-    end,
-    Stanza;
-
-on_affiliation_removal(Stanza, _C2SState, _Jid, _From, _To) -> Stanza.
 
 %-------------------------------------------------------------------------
 
@@ -980,6 +647,7 @@ add_backends(Host) ->
     lists:foreach(
         fun({Backend, AuthData}) ->
             RegisterHost = Backend#push_backend.register_host,
+            ejabberd_router:register_route(RegisterHost),
             ejabberd_hooks:add(adhoc_local_commands, RegisterHost, ?MODULE, process_adhoc_command, 75),
             ?INFO_MSG("added adhoc command handler for app server ~p",
                       [RegisterHost]),
@@ -994,7 +662,9 @@ add_backends(Host) ->
             mnesia:write(NewBackend),
             start_worker(Backend, AuthData)
         end,
-        Backends).
+      Backends),
+    Backends.
+    
 
 %-------------------------------------------------------------------------
 
@@ -1194,65 +864,6 @@ process_adhoc_command(Acc, _From, _To, _Request) ->
     Acc.
      
 %-------------------------------------------------------------------------
-
--spec(process_iq
-(
-    From :: jid(),
-    _To :: jid(),
-    IQ :: iq())
-    -> iq()
-).
-
-process_iq(From, _To, #iq{type = Type, sub_el = SubEl} = IQ) ->
-    JidB = proplists:get_value(<<"jid">>, SubEl#xmlel.attrs),
-    Node = proplists:get_value(<<"node">>, SubEl#xmlel.attrs),
-    case JidB of
-        undefined -> IQ#iq{type = error, sub_el = [SubEl, ?ERR_NOT_ALLOWED]};
-        _ ->
-            case jlib:string_to_jid(JidB) of
-                error ->
-                    IQ#iq{type = error, sub_el = [?ERR_JID_MALFORMED, SubEl]};
-                
-                Jid ->
-                    case {Type, SubEl} of
-                        {set, #xmlel{name = <<"enable">>,
-                                     children = Children}} ->
-                            XDataForms = get_xdata_elements(Children),
-                            case enable(From, Jid, Node, XDataForms) of
-                                {enabled, ok} ->
-                                    IQ#iq{type = result, sub_el = []};
-
-                                {enabled, ResponseForm} -> 
-                                    NewSubEl =
-                                    SubEl#xmlel{children = ResponseForm},
-                                    IQ#iq{type = result, sub_el = [NewSubEl]};
-
-                                {error, Error} ->
-                                    IQ#iq{type = error,
-                                          sub_el = [Error, SubEl]}
-                            end;
-
-                        {set, #xmlel{name = <<"disable">>}} ->
-                            case disable(From, Jid, Node) of
-                                {disabled, ok} ->
-                                    IQ#iq{type = result, sub_el = []};
-
-                                {error, Error} ->
-                                    IQ#iq{type = error,
-                                          sub_el = [Error, SubEl]}
-                            end;
-
-                        _ ->
-                            ?DEBUG("+++++ Received Invalid push iq from ~p",
-                                   [jlib:jid_to_string(From)]),
-                            IQ#iq{type = error,
-                                  sub_el = [?ERR_NOT_ALLOWED, SubEl]}
-                    end
-            end
-    end.
-                    
-
-%-------------------------------------------------------------------------
 % gen_mod callbacks
 %-------------------------------------------------------------------------
 
@@ -1306,19 +917,14 @@ start(Host, _Opts) ->
         SPacketFields -> ok;
         _ -> mnesia:transform_table(push_stored_packet, ignore, SPacketFields)
     end,
-    % TODO: check if backends in registrations are still present
-    % TODO: send push notifications (event server available) to all push users
 
-    %%% FIXME: haven't thought about IQDisc parameter
-    gen_iq_handler:add_iq_handler(ejabberd_sm, Host, ?NS_PUSH, ?MODULE, process_iq, one_queue),
-    ejabberd_hooks:add(user_receive_packet, Host, ?MODULE, on_affiliation_removal, 50),
     ejabberd_hooks:add(remove_user, Host, ?MODULE, on_remove_user, 50),
-    F = fun() ->
-        add_backends(Host),
-        notify_previous_users(Host)
-    end,
+    ejabberd_hooks:add(offline_message_hook, Host, ?MODULE, on_offline_message, ?OFFLINE_HOOK_PRIO),
+    F = fun() -> Bs = add_backends(Host),
+                 notify_previous_users(Host),
+                 Bs end,
     case mnesia:transaction(F) of
-        {atomic, _} -> ?DEBUG("++++++++ Added push backends", []);
+        {atomic, Bs} -> ?DEBUG("++++++++ Added push backends: ~p", [Bs]);
         {aborted, Error} -> ?DEBUG("+++++++++ Error adding push backends: ~p", [Error])
     end.
 
@@ -1332,8 +938,8 @@ start(Host, _Opts) ->
 
 stop(Host) ->
     gen_iq_handler:remove_iq_handler(ejabberd_sm, Host, ?NS_PUSH),
-    ejabberd_hooks:delete(user_receive_packet, Host, ?MODULE, on_affiliation_removal, 50),
     ejabberd_hooks:delete(remove_user, Host, ?MODULE, on_remove_user, 50),
+    ejabberd_hooks:delete(offline_message_hook, Host, ?MODULE, on_offline_message, ?OFFLINE_HOOK_PRIO),
     F = fun() ->
         mnesia:foldl(
             fun(Backend) ->
@@ -1367,6 +973,9 @@ stop(Host) ->
        end,
     mnesia:transaction(F).
 
+depends(_, _) ->
+    [{mod_offline, hard}].
+
 %-------------------------------------------------------------------------
 
 mod_opt_type(iqdisc) -> fun gen_iq_handler:check_type/1;
@@ -1383,100 +992,6 @@ mod_opt_type(_) ->
 
 %-------------------------------------------------------------------------
 % mod_push utility functions
-%-------------------------------------------------------------------------
-
--spec(get_global_config (Host :: binary()) -> user_config()).
-
-get_global_config(Host) ->
-    [{'include-senders',
-      gen_mod:get_module_opt(Host, ?MODULE, include_senders,
-                             fun(B) when is_boolean(B) -> B end,
-                             ?INCLUDE_SENDERS_DEFAULT)},
-     {'include-message-count',
-      gen_mod:get_module_opt(Host, ?MODULE, include_message_count,
-                             fun(B) when is_boolean(B) -> B end,
-                             ?INCLUDE_MSG_COUNT_DEFAULT)},
-     {'include-subscription-count',
-      gen_mod:get_module_opt(Host, ?MODULE, include_subscription_count,
-                             fun(B) when is_boolean(B) -> B end,
-                             ?INCLUDE_SUBSCR_COUNT_DEFAULT)},
-     {'include-message-bodies',
-      gen_mod:get_module_opt(Host, ?MODULE, include_message_bodies,
-                             fun(B) when is_boolean(B) -> B end,
-                             ?INCLUDE_MSG_BODIES_DEFAULT)}].
-
-%-------------------------------------------------------------------------
-
--spec(make_config
-(
-    XDataForms :: [xmlelement()],
-    OldConfig :: user_config(),
-    ConfigPrivilege :: disable_only | enable_disable)
-    -> {user_config(), user_config()}
-).
-
-make_config(XDataForms, OldConfig, ConfigPrivilege) ->
-    %% if a user is allowed to change an option from OldValue to NewValue,
-    %% OptionAllowed(OldValue, NewValue) returns true
-    OptionAllowed = case ConfigPrivilege of
-        disable_only ->
-            fun
-                (true, false) -> true;
-                (Old, New) when Old =:= New -> true;
-                (_, _) -> false
-            end;
-        enable_disable ->
-            fun
-                (_, NewValue) when not is_boolean(NewValue) -> false;
-                (_, _) -> true
-            end
-    end,
-    AllowedOpts =
-    ['include-senders', 'include-message-count', 'include-subscription-count',
-     'include-message-bodies'],
-    OptionalFields =
-    lists:map(
-        fun(Opt) -> {{single, atom_to_binary(Opt, utf8)},
-                     fun(B) -> binary_to_boolean(B, error) end}
-        end,
-        AllowedOpts),
-    ParseResult = parse_form(XDataForms, ?NS_PUSH_OPTIONS, [], OptionalFields),
-    ?DEBUG("+++++ ParseResult = ~p", [ParseResult]),
-    case ParseResult of
-        error -> error;
-        
-        not_found -> {OldConfig, []};
-
-        {result, ParsedOptions} ->
-            AnyError =
-            lists:any(
-                fun
-                    (error) -> true;
-                    (_) -> false
-                end,
-                ParsedOptions),
-            case AnyError of
-                true -> error;
-
-                false ->
-                    lists:foldl(
-                        fun({Key, Value}, {ConfigAcc, AcceptedOptsAcc}) ->
-                            OldValue = proplists:get_value(Key, OldConfig),
-                            AcceptOpt = OptionAllowed(OldValue, Value),
-                            case AcceptOpt of
-                                true ->
-                                    {[{Key, Value}|ConfigAcc],
-                                     [{Key, Value}|AcceptedOptsAcc]};
-                                false ->
-                                    {[{Key, OldValue}|ConfigAcc],
-                                     AcceptedOptsAcc}
-                            end
-                        end,
-                        {[], []},
-                        lists:zip(AllowedOpts, ParsedOptions))
-            end
-    end.
-                    
 %-------------------------------------------------------------------------
 
 -spec(parse_backends
@@ -1656,13 +1171,6 @@ filter_payload(Payload, Config) ->
 % general utility functions
 %-------------------------------------------------------------------------
 
--spec(is_local_domain (Hostname :: binary()) -> boolean()).
-
-is_local_domain(Hostname) ->
-    lists:member(Hostname, ejabberd_router:dirty_get_all_domains()).
-
-%-------------------------------------------------------------------------
-
 -spec(remove_subdomain (Hostname :: binary()) -> binary()).
 
 remove_subdomain(Hostname) ->
@@ -1681,30 +1189,6 @@ vvaluel(Val) ->
         <<>> -> [];
         _ -> [?VVALUE(Val)]
     end.
-
-get_xdata_elements(Elements) ->
-    get_xdata_elements(Elements, []).
-
-get_xdata_elements([#xmlel{name = <<"x">>, attrs = Attrs} = H | T], Acc) ->
-    case proplists:get_value(<<"xmlns">>, Attrs) of
-        ?NS_XDATA ->
-            NewAttrs =
-            case fxml:get_attr(<<"type">>, Attrs) of
-                {value, _Type} ->
-                    Attrs;
-                false ->
-                    [{<<"type">>, <<"submit">>}|Attrs]
-            end,
-            get_xdata_elements(T, [H#xmlel{attrs = NewAttrs}|Acc]);
-        _ ->
-            get_xdata_elements(T, Acc)
-    end;
-
-get_xdata_elements([_ | T], Acc) ->
-    get_xdata_elements(T, Acc);
-
-get_xdata_elements([], Acc) ->
-    lists:reverse(Acc).
 
 %-------------------------------------------------------------------------
 
@@ -1834,22 +1318,6 @@ parse_form([XDataForm|T], FormType, RequiredFields, OptionalFields) ->
 
 %-------------------------------------------------------------------------
 
--spec(make_config_form (user_config()) -> [xmlelement()]).
-
-make_config_form(Opts) ->
-    Fields =
-    [?TVFIELD(<<"boolean">>, atom_to_binary(K, utf8), [boolean_to_binary(V)]) ||
-     {K, V} <- Opts],
-    case Fields of
-        [] -> [];
-        _ ->
-            [#xmlel{name = <<"x">>,
-                    attrs = [{<<"xmlns">>, ?NS_XDATA}, {<<"type">>, <<"result">>}],
-                    children = [?HFIELD(?NS_PUSH_OPTIONS)|Fields]}]
-    end.
-
-%-------------------------------------------------------------------------
-
 -spec(make_worker_name
 (
     RegisterHost :: binary(),
@@ -1859,44 +1327,6 @@ make_config_form(Opts) ->
 
 make_worker_name(RegisterHost, Type) ->
     gen_mod:get_module_proc(RegisterHost, Type).
-
-%-------------------------------------------------------------------------
-
--spec(boolean_to_binary (Bool :: boolean()) -> binary()).
-
-boolean_to_binary(Bool) ->
-    case Bool of
-        true -> <<"1">>;
-        false -> <<"0">>
-    end.
-
--spec(binary_to_boolean
-(
-    Binary :: binary(),
-    DefaultResult :: any())
-    -> any()
-).
-
-binary_to_boolean(Binary, DefaultResult) ->
-    binary_to_boolean(Binary, DefaultResult, error).
-
--spec(binary_to_boolean
-(
-    Binary :: binary(),
-    DefaultResult :: any(),
-    InvalidResult :: any())
-    -> any()
-).
-
-binary_to_boolean(Binary, DefaultResult, InvalidResult) ->
-    case Binary of
-        <<"1">> -> true;
-        <<"0">> -> false;
-        <<"true">> -> true;
-        <<"false">> -> false;
-        undefined -> DefaultResult;
-        _ -> InvalidResult
-    end.
 
 %-------------------------------------------------------------------------
 
