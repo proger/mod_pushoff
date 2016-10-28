@@ -47,16 +47,9 @@
 
 -define(NS_PUSH, <<"urn:xmpp:push:0">>).
 
--define(INCLUDE_SENDERS_DEFAULT, false).
--define(INCLUDE_MSG_COUNT_DEFAULT, true).
--define(INCLUDE_SUBSCR_COUNT_DEFAULT, true).
--define(INCLUDE_MSG_BODIES_DEFAULT, false).
--define(SILENT_PUSH_DEFAULT, true).
-
--define(OFFLINE_HOOK_PRIO, 100). % must fire before mod_offline (which has 50)
+-define(OFFLINE_HOOK_PRIO, 1). % must fire before mod_offline (which has 50)
 
 -define(MAX_INT, 4294967295).
--define(ADJUSTED_RESUME_TIMEOUT, 100*24*60*60).
 
 %-------------------------------------------------------------------------
 % xdata-form macros
@@ -130,10 +123,6 @@
 -type payload() :: [{payload_key(), payload_value()}].
 -type push_backend() :: #push_backend{}.
 -type push_registration() :: #push_registration{}.
--type user_config_option() ::
-    'include-senders' | 'include-message-count' | 'include-subscription-count' |
-    'include-message-bodies'.
--type user_config() :: [user_config_option()].
 
 %-------------------------------------------------------------------------
 
@@ -683,7 +672,6 @@ get_backend_opts(RawOptsList) ->
 
 make_payload([]) -> none;
 make_payload(UnackedStanzas) ->
-    Config = [],
     StoredPayload = [],
     UpdatePayload = fun(NewValues, OldPayload) ->
                             lists:foldl(
