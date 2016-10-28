@@ -53,7 +53,7 @@
 -define(INCLUDE_MSG_BODIES_DEFAULT, false).
 -define(SILENT_PUSH_DEFAULT, true).
 
--define(OFFLINE_HOOK_PRIO, 1). % must fire before mod_offline (which has 50)
+-define(OFFLINE_HOOK_PRIO, 100). % must fire before mod_offline (which has 50)
 
 -define(MAX_INT, 4294967295).
 -define(ADJUSTED_RESUME_TIMEOUT, 100*24*60*60).
@@ -261,7 +261,7 @@ on_offline_message(_From, To, Stanza) ->
 
 %-------------------------------------------------------------------------
 
--spec(dispatch(Stanzas :: [{erlang:timestamp(), xmlelement(), boolean()}],
+-spec(dispatch(Stanzas :: [{erlang:timestamp(), xmlelement()}],
                UserJid :: jid()) -> ok | not_subscribed).
 
 dispatch(Stanzas, ToUserJid) ->
@@ -452,7 +452,7 @@ process_adhoc_command(Acc, From, #jid{lserver = LServer},
     case Result of
         unknown -> Acc;
 
-        {registered} ->
+        {registered, ok} ->
             Response =
             #adhoc_response{
                 status = completed,
@@ -685,16 +685,15 @@ make_payload([]) -> none;
 make_payload(UnackedStanzas) ->
     Config = [],
     StoredPayload = [],
-    UpdatePayload =
-    fun(NewValues, OldPayload) ->
-        lists:foldl(
-            fun
-                ({_Key, undefined}, Acc) -> Acc;
-                ({Key, Value}, Acc) -> lists:keystore(Key, 1, Acc, {Key, Value})
-            end,
-            OldPayload,
-            NewValues)
-    end,
+    UpdatePayload = fun(NewValues, OldPayload) ->
+                            lists:foldl(
+                              fun
+                                  ({_Key, undefined}, Acc) -> Acc;
+                                  ({Key, Value}, Acc) -> lists:keystore(Key, 1, Acc, {Key, Value})
+                              end,
+                              OldPayload,
+                              NewValues)
+                    end,
     MakeNewValues =
     fun(Stanza, OldPayload) ->
         FromS = proplists:get_value(<<"from">>, Stanza#xmlel.attrs),
@@ -753,30 +752,7 @@ make_payload(UnackedStanzas) ->
         end,                                              
         {StoredPayload, []},
         UnackedStanzas),
-    {filter_payload(NewPayload, Config), StanzasToStore}.
-
-%-------------------------------------------------------------------------
-
--spec(filter_payload
-(
-    Payload :: payload(),
-    Config :: user_config())
-    -> payload()
-).
-
-filter_payload(Payload, Config) ->
-    OptsConfigMapping =
-    [{'message-count', 'include-message-count'},
-     {'last-message-sender', 'include-senders'},
-     {'last-subscription-sender', 'include-senders'},
-     {'last-message-body', 'include-message-bodies'},
-     {'pending-subscription-count', 'include-subscription-count'}],
-    lists:filter(
-        fun({Key, _}) ->
-            ConfigOpt = proplists:get_value(Key, OptsConfigMapping),
-            proplists:get_value(ConfigOpt, Config)
-        end,
-        Payload).
+    {NewPayload, StanzasToStore}.
 
 %-------------------------------------------------------------------------
 % general utility functions
