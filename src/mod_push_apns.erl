@@ -71,7 +71,7 @@
 %-------------------------------------------------------------------------
 
 init([_AuthKey, _PackageSid, CertFile]) ->
-    ?DEBUG("+++++++++ mod_push_apns:init, certfile = ~p", [CertFile]),
+    ?INFO_MSG("+++++++++ mod_push_apns:init, certfile = ~p", [CertFile]),
     inets:start(),
     crypto:start(),
     ssl:start(),
@@ -125,6 +125,11 @@ handle_info({ssl, _Socket, Data},
                                 [{UserB, [], Token, DisableArgs}|RetryList],
                                 retry_timer = NewRetryTimer,
                                 retry_timestamp = Timestamp};
+
+                        8 ->
+                            ?ERROR_MSG("APNS error: invalid token for ~p ~p", [UserB, Token]),
+                            mod_push:unregister_client(DisableArgs),
+                            State#state{pending_list = NewPending};
 
                         S ->
                             ?INFO_MSG("non-recoverable APNS error: ~p", [S]),
@@ -274,7 +279,7 @@ handle_call(_Req, _From, State) -> {reply, {error, badarg}, State}.
 %-------------------------------------------------------------------------
 
 %% new message
-handle_cast({dispatch, UserBare, Payload, Token, _AppId, DisableArgs},
+handle_cast({dispatch, UserBare, Payload, Token, DisableArgs},
             #state{send_list = SendList,
                    pending_timer = PendingTimer,
                    retry_timer = RetryTimer} = State) ->

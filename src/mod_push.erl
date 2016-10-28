@@ -183,18 +183,16 @@ unregister_client({U, T}) -> unregister_client(U, T).
 
 -spec(unregister_client
 (
-    UserJid :: jid(),
+    BareJid :: bare_jid(),
     Timestamp :: erlang:timestamp())
     -> error | {error, xmlelement()} | {unregistered, ok} |
        {unregistered, [binary()]}
 ).
 
-unregister_client(#jid{lresource = <<"">>}, _) -> error;
-unregister_client(undefined, _) -> error;
-
-unregister_client(UserJid, Timestamp) ->
+unregister_client(#jid{luser = LUser, lserver = LServer}, Ts) ->
+    unregister_client({LUser, LServer}, Ts);
+unregister_client({LUser, LServer}, Timestamp) ->
     F = fun() ->
-                #jid{luser = LUser, lserver = LServer} = UserJid,
                 MatchHead =
                     #push_registration{bare_jid = {LUser, LServer}, timestamp = Timestamp, _='_'},
                 MatchingReg =
@@ -278,7 +276,7 @@ do_dispatch(UserBare = {LUser, LServer}, Payload) ->
                             token = Token,
                             backend_id = BackendId,
                             timestamp = Timestamp}] ->
-            DisableArgs = {node, Timestamp},
+            DisableArgs = {UserBare, Timestamp},
             [#push_backend{worker = Worker}] = mnesia:read({push_backend, BackendId}),
 
             gen_server:cast(Worker, {dispatch, UserBare, Payload, Token, DisableArgs})
