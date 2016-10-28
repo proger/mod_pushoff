@@ -35,18 +35,9 @@
          get_backend_opts/1,
          process_iq/3,
          on_store_stanza/3,
-         incoming_notification/4,
          on_affiliation_removal/5,
-         on_unset_presence/4,
-         on_resume_session/1,
-         on_wait_for_resume/3,
-         on_disco_sm_features/5,
-         on_disco_pubsub_info/5,
-         on_disco_reg_identity/5,
-         on_disco_sm_identity/5,
          on_remove_user/2,
          process_adhoc_command/4,
-         resend_packets/1,
          unregister_client/1,
          check_secret/2]).
 
@@ -55,10 +46,6 @@
 -include("adhoc.hrl").
 
 -define(MODULE_APNS, mod_push_apns).
--define(MODULE_GCM, mod_push_gcm).
--define(MODULE_MOZILLA, mod_push_mozilla).
--define(MODULE_UBUNTU, mod_push_ubuntu).
--define(MODULE_WNS, mod_push_wns).
 
 -define(NS_PUSH, <<"urn:xmpp:push:0">>).
 -define(NS_PUSH_SUMMARY, <<"urn:xmpp:push:summary">>).
@@ -161,7 +148,7 @@
                              packet :: xmlelement()}).
 
 -type auth_data() :: #auth_data{}.
--type backend_type() :: apns | gcm | mozilla | ubuntu | wns.
+-type backend_type() :: apns.
 -type bare_jid() :: {binary(), binary()}.
 -type payload_key() ::
     'last-message-sender' | 'last-subscription-sender' | 'message-count' |
@@ -679,7 +666,9 @@ on_store_stanza(RerouteFlag, To, Stanza) ->
     -> ok | not_subscribed
 ).
 
-dispatch(Stanzas, UserJid, SetPending) ->
+dispatch(_, _, _SetPending = true) ->
+    throw(i_am_supposed_to_remove_setpending);
+dispatch(Stanzas, UserJid, _SetPending = false) ->
     #jid{luser = LUser, lserver = LServer, lresource = LResource} = UserJid,
     case mnesia:read({push_user, {LUser, LServer}}) of
         [] -> not_subscribed;
@@ -687,10 +676,7 @@ dispatch(Stanzas, UserJid, SetPending) ->
             ?DEBUG("+++++ dispatch: found push_user", []),
             #push_user{subscriptions = Subscrs, config = Config,
                        payload = OldPayload} = PushUser,
-            NewSubscrs = case SetPending of
-                true -> set_pending(LResource, true, Subscrs);
-                false -> Subscrs
-            end,
+            NewSubscrs = Subscrs,
             ?DEBUG("+++++ NewSubscrs = ~p", [NewSubscrs]),
             MatchingSubscr =
             [M || #subscription{pending = P, resource = R} = M <- NewSubscrs,
@@ -875,50 +861,6 @@ do_dispatch_remote({User, Server}, PubsubJid, Node, Payload, Secret) ->
 
 %-------------------------------------------------------------------------
 
--spec(on_unset_presence
-(
-    User :: binary(),
-    Server :: binary(),
-    Resource :: binary(),
-    Status :: binary())
-    -> any()
-).
-
-on_unset_presence(User, Server, Resource, _Status) ->
-    SubscrPred =
-    fun(#subscription{resource = LResource}) -> LResource =:= Resource end,
-    delete_subscriptions({User, Server}, SubscrPred, false),
-    F = fun() ->
-        mnesia:delete({push_stored_packet, {User, Server, Resource}})
-    end,
-    mnesia:transaction(F).
-
-%-------------------------------------------------------------------------
-
--spec(resend_packets (Jid :: jid()) -> ok).
-
-resend_packets(Jid) ->
-    F = fun() ->
-        LJid = jlib:jid_tolower(Jid),
-        Packets = mnesia:read({push_stored_packet, LJid}),
-        ?DEBUG("+++++++ resending packets to user ~p", [jlib:jid_to_string(LJid)]),
-        lists:foreach(
-            fun(#push_stored_packet{timestamp = T, packet = P}) ->
-	            FromS = proplists:get_value(<<"from">>, P#xmlel.attrs),
-                From = jlib:string_to_jid(FromS),
-                StampedPacket = jlib:add_delay_info(P, Jid#jid.lserver, T),
-                ejabberd_sm ! {route, From, Jid, StampedPacket}
-            end,
-            lists:keysort(#push_stored_packet.timestamp, Packets)),
-        case Packets of
-            [] -> ok;
-            _ -> mnesia:delete({push_stored_packet, LJid})
-        end
-    end,
-    mnesia:transaction(F).
-
-%-------------------------------------------------------------------------
-
 -spec(on_remove_user (User :: binary(), Server :: binary()) -> ok).
 
 on_remove_user(User, Server) ->
@@ -1001,155 +943,6 @@ on_affiliation_removal(#xmlel{name = <<"message">>, children = Children} = Stanz
     Stanza;
 
 on_affiliation_removal(Stanza, _C2SState, _Jid, _From, _To) -> Stanza.
-        
-%-------------------------------------------------------------------------
-
--spec(on_wait_for_resume
-(
-    Timeout :: integer(),
-    jid(),
-    UnackedStanzas :: [xmlelement()])
-    -> integer()
-).
-
-on_wait_for_resume(Timeout, User, UnackedStanzas) ->
-    F = fun() -> dispatch(UnackedStanzas, User, true) end,
-    case mnesia:transaction(F) of
-        {atomic, not_subscribed} -> Timeout;
-
-        {atomic, ok} ->
-            ?DEBUG("+++++++ adjusting timeout to ~p",
-                   [?ADJUSTED_RESUME_TIMEOUT]),
-            ?ADJUSTED_RESUME_TIMEOUT;
-
-        {aborted, Reason} ->
-            ?DEBUG("+++++++ mod_push could not read timeout: ~p", [Reason]),
-            Timeout
-    end.
-
-%-------------------------------------------------------------------------
-
--spec(on_resume_session
-(
-    User :: jid())
-    -> any()
-).
-
-on_resume_session(#jid{luser = LUser, lserver = LServer, lresource = LResource}
-                  = User) ->
-    ?DEBUG("+++++++++++ on_resume_session", []),
-    F = fun() ->
-        case mnesia:read({push_user, {LUser, LServer}}) of
-            [] -> ok;
-            [#push_user{subscriptions = Subscrs} = PushUser] ->
-                NewSubscrs = set_pending(LResource, false, Subscrs),
-                mnesia:write(PushUser#push_user{payload = [],
-                                                subscriptions = NewSubscrs}),
-                mnesia:delete({push_stored_packet, jlib:jid_tolower(User)}) 
-        end
-    end,
-    mnesia:transaction(F).
-
-%-------------------------------------------------------------------------
-
--spec(incoming_notification
-(
-    _HookAcc :: any(),
-    Node :: binary(),
-    Payload :: xmlelement(),
-    PubOpts :: xmlelement())
-    -> any()
-).
-
-incoming_notification(_HookAcc, Node, [#xmlel{name = <<"notification">>,
-                                              attrs = [{<<"xmlns">>, ?NS_PUSH}],
-                                              children = Children}|_],
-                      PubOpts) ->
-    ?DEBUG("+++++ in mod_push:incoming_notification, Node: ~p, PubOpts = ~p",
-           [Node, PubOpts]),
-    ProcessReg =
-    fun(#push_registration{bare_jid = BareJid,
-                           token = Token,
-                           secret = Secret,
-                           app_id = AppId,
-                           backend_id = BackendId,
-                           timestamp = Timestamp}) ->
-        case check_secret(Secret, PubOpts) of
-            true ->
-                case get_xdata_elements(Children) of
-                   [] ->
-                       do_dispatch_local(BareJid, [], Token, AppId, BackendId,
-                                         Node, Timestamp, false);
-
-                    XDataForms ->
-                        ParseResult =
-                        parse_form(
-                            XDataForms, ?NS_PUSH_SUMMARY, [],
-                            [{{single, <<"message-count">>},
-                              fun erlang:binary_to_integer/1},
-                             {{single, <<"last-message-sender">>},
-                              fun jlib:string_to_jid/1},
-                             {single, <<"last-message-body">>},
-                             {{single, <<"pending-subscription-count">>},
-                              fun erlang:binary_to_integer/1},
-                             {{single, <<"last-subscription-sender">>},
-                              fun jlib:string_to_jid/1}]),
-                        case ParseResult of
-                            {result,
-                             [MsgCount, MsgSender, MsgBody, SubscrCount,
-                              SubscrSender]} ->
-                                Payload =
-                                lists:foldl(
-                                    fun({Key, Value}, Acc) ->
-                                        case Value of
-                                            undefined ->
-                                                Acc;
-                                            #jid{} ->
-                                                JidStr =
-                                                jlib:jid_to_string(Value),
-                                                [{Key, JidStr}|Acc];
-                                            _ ->
-                                                [{Key, Value}|Acc]
-                                        end
-                                    end,
-                                    [],
-                                    [{'message-count', MsgCount},
-                                     {'last-message-sender', MsgSender},
-                                     {'last-message-body', MsgBody},
-                                     {'pending-subscription-count', SubscrCount},
-                                     {'last-subscription-sender', SubscrSender}]),
-                                do_dispatch_local(BareJid, Payload, Token,
-                                                  AppId, BackendId, Node,
-                                                  Timestamp, false);
-                             Err ->
-                                ?DEBUG("+++++ parse_form returned ~p", [Err]),
-                                ?INFO_MSG("Cancel dispatching push "
-                                          "notification: item published on node"
-                                          " ~p contains malformed data form",
-                                          [Node]),
-                                bad_request
-                        end
-                end;
- 
-            false -> not_authorized
-        end
-    end,
-    F = fun() ->
-        case mnesia:read({push_registration, Node}) of
-            [] ->
-                ?INFO_MSG("received push notification for non-existing node ~p",
-                          [Node]),
-                node_not_found;
-
-            [Reg] ->
-                ?DEBUG("+++++ Registration = ~p", [Reg]),
-                ProcessReg(Reg)
-        end
-    end,
-    case mnesia:transaction(F) of
-        {atomic, Result} -> Result;
-        {aborted, _Reason} -> internal_server_error
-    end.
 
 %-------------------------------------------------------------------------
 
@@ -1186,12 +979,10 @@ add_backends(Host) ->
     Backends = parse_backends(BackendOpts, CertFile),
     lists:foreach(
         fun({Backend, AuthData}) ->
-            RegisterHost =Backend#push_backend.register_host,
-            PubsubHost = Backend#push_backend.pubsub_host,
+            RegisterHost = Backend#push_backend.register_host,
+            ejabberd_hooks:add(adhoc_local_commands, RegisterHost, ?MODULE, process_adhoc_command, 75),
             ?INFO_MSG("added adhoc command handler for app server ~p",
                       [RegisterHost]),
-            ejabberd_hooks:add(node_push_publish_item, PubsubHost, ?MODULE,
-                               incoming_notification, 50),
             NewBackend =
             case mnesia:read({push_backend, Backend#push_backend.id}) of
                 [] -> Backend;
@@ -1204,44 +995,6 @@ add_backends(Host) ->
             start_worker(Backend, AuthData)
         end,
         Backends).
-    
-%-------------------------------------------------------------------------
-
--spec(add_disco_hooks
-(
-    ServerHost :: binary())
-    -> any()
-). 
-
-add_disco_hooks(ServerHost) ->
-    BackendKeys = mnesia:all_keys(push_backend),
-    lists:foreach(
-        fun(K) ->
-            [#push_backend{register_host = RegHost,
-                           pubsub_host = PubsubHost}] =
-            mnesia:read({push_backend, K}),
-            case is_local_domain(RegHost) of
-                false ->
-                    ?DEBUG("Registering new route: ~p", [RegHost]),
-                    ejabberd_router:register_route(RegHost);
-                true -> ok
-            end,
-            ejabberd_hooks:add(adhoc_local_commands,
-                               RegHost,
-                               ?MODULE,
-                               process_adhoc_command,
-                               75),
-            %ejabberd_hooks:add(disco_local_identity, PubsubHost, ?MODULE,
-            %                   on_disco_pubsub_identity, 50),
-            % FIXME: this is a workaround, see below
-            ejabberd_hooks:add(disco_info, ServerHost, ?MODULE,
-                               on_disco_pubsub_info, 101),
-            ejabberd_hooks:add(disco_local_identity, RegHost, ?MODULE,
-                               on_disco_reg_identity, 50),
-            ejabberd_hooks:add(disco_sm_identity, ServerHost, ?MODULE,
-                               on_disco_sm_identity, 49)
-        end,
-        BackendKeys).
 
 %-------------------------------------------------------------------------
 
@@ -1258,11 +1011,7 @@ start_worker(#push_backend{worker = Worker, type = Type},
                         certfile = CertFile}) ->
     Module =
     proplists:get_value(Type,
-                        [{apns, ?MODULE_APNS},
-                         {gcm, ?MODULE_GCM},
-                         {mozilla, ?MODULE_MOZILLA},
-                         {ubuntu, ?MODULE_UBUNTU},
-                         {wns, ?MODULE_WNS}]),
+                        [{apns, ?MODULE_APNS}]),
     BackendSpec =
     {Worker,
      {gen_server, start_link,
@@ -1331,71 +1080,6 @@ process_adhoc_command(Acc, From, #jid{lserver = LServer},
                                 register_client(From, LServer, apns, Token,
                                                 DeviceId, DeviceName, <<"">>)
                         end;
-
-                    _ -> error
-                end
-            end;
-
-        <<"register-push-gcm">> ->
-            fun() ->
-                Parsed = parse_form([XData],
-                                    undefined,
-                                    [{single, <<"token">>}],
-                                    [{single, <<"device-id">>},
-                                     {single, <<"device-name">>}]),
-                case Parsed of
-                    {result, [Token, DeviceId, DeviceName]} ->
-                        register_client(From, LServer, gcm, Token, DeviceId,
-                                        DeviceName, <<"">>);
-
-                    _ -> error
-                end
-            end;
-
-        <<"register-push-mozilla">> ->
-            fun() ->
-                Parsed = parse_form([XData],
-                                    undefined,
-                                    [{single, <<"token">>}],
-                                    [{single, <<"device-id">>},
-                                     {single, <<"device-name">>}]),
-                case Parsed of
-                    {result, [Token, DeviceId, DeviceName]} ->
-                        register_client(From, LServer, mozilla, Token, DeviceId,
-                                        DeviceName, <<"">>);
-
-                    _ -> error
-                end
-            end;
-
-        <<"register-push-ubuntu">> ->
-            fun() ->
-                Parsed = parse_form([XData],
-                                    undefined,
-                                    [{single, <<"token">>},
-                                     {single, <<"application-id">>}],
-                                    [{single, <<"device-id">>},
-                                     {single, <<"device-name">>}]),
-                case Parsed of
-                    {result, [Token, AppId, DeviceId, DeviceName]} ->
-                        register_client(From, LServer, ubuntu, Token,
-                                        DeviceId, DeviceName, AppId);
-                    
-                    _ -> error
-                end
-            end;
-
-        <<"register-push-wns">> ->
-            fun() ->
-                Parsed = parse_form([XData],
-                                    undefined,
-                                    [{single, <<"token">>}],
-                                    [{single, <<"device-id">>},
-                                     {single, <<"device-name">>}]),
-                case Parsed of
-                    {result, [Token, DeviceId, DeviceName]} ->
-                        register_client(From, LServer, wns, Token, DeviceId,
-                                        DeviceName, <<"">>);
 
                     _ -> error
                 end
@@ -1567,142 +1251,6 @@ process_iq(From, _To, #iq{type = Type, sub_el = SubEl} = IQ) ->
             end
     end.
                     
-%-------------------------------------------------------------------------
-
--spec(on_disco_sm_features
-(
-    Acc :: any(),
-    _From :: jid(),
-    _To :: jid(),
-    Node :: binary(),
-    _Lang :: binary())
-    -> any()
-).
-
-on_disco_sm_features(empty, _From, _To, <<"">>, _Lang) ->
-    ?DEBUG("+++++++++ on_disco_sm_features, returning ~p",
-           [{result, [?NS_PUSH]}]),
-    {result, [?NS_PUSH]};
-
-on_disco_sm_features({result, Features}, _From, _To, <<"">>, _Lang) ->
-    ?DEBUG("+++++++++ on_disco_sm_features, returning ~p",
-           [{result, [?NS_PUSH|Features]}]),
-    {result, [?NS_PUSH|Features]};
-
-on_disco_sm_features(Acc, _From, _To, _Node, _Lang) ->
-    ?DEBUG("+++++++++ on_disco_sm_features, returning ~p", [Acc]),
-    Acc.
-
-%%-------------------------------------------------------------------------
-
-% FIXME: this is a workaround, it adds identity and features to the info data
-% created by mod_disco when mod_pubsub calls the hook disco_info. Instead
-% mod_pubsub should set mod_disco:process_local_iq_info as iq handler for its
-% pubsub host. Then on_disco_identity can hook up with disco_local_identity and
-% disco_local_features
-on_disco_pubsub_info(Acc, _ServerHost, mod_pubsub, <<"">>, <<"">>) ->
-    PushIdentity = #xmlel{name = <<"identity">>,
-                          attrs = [{<<"category">>, <<"pubsub">>},
-                                   {<<"type">>, <<"push">>}],
-                          children = []},
-    PushFeature = #xmlel{name = <<"feature">>,
-                         attrs = [{<<"var">>, ?NS_PUSH}],
-                         children = []},
-    [PushIdentity, PushFeature | Acc];
-
-on_disco_pubsub_info(Acc, _, _, _, _) ->
-    Acc.
-
-%%-------------------------------------------------------------------------
-
-%on_disco_pubsub_identity(Acc, _From, #jid{lserver = PubsubHost}, <<"">>, _) ->
-%    F = fun() ->
-%        MatchHead = #push_backend{pubsub_host = PubsubHost, _='_'},
-%        case mnesia:select(push_backend, [{MatchHead, [], ['$_']}]) of
-%            [] -> Acc;
-%            _ ->
-%                PushIdentity =
-%                #xmlel{name = <<"identity">>,
-%                       attrs = [{<<"category">>, <<"pubsub">>},
-%                                {<<"type">>, <<"push">>}],
-%                       children = []},
-%                [PushIdentity|Acc]
-%        end
-%    end,
-%    case mnesia:transaction(F) of
-%        {atomic, AccOut} -> AccOut;
-%        _ -> Acc
-%    end;
-%
-%on_disco_pubsub_identity(Acc, _From, _To, _Node, _Lang) ->
-%    Acc.
-
-%%-------------------------------------------------------------------------
-
--spec(on_disco_reg_identity
-(
-    Acc :: [xmlelement()],
-    _From :: jid(),
-    To :: jid(),
-    _Node :: binary(),
-    _Lang :: binary())
-    -> [xmlelement()]
-).
-
-on_disco_reg_identity(Acc, _From, #jid{lserver = RegHost}, <<"">>, _Lang) ->
-    F = fun() ->
-        MatchHead =
-        #push_backend{register_host = RegHost, app_name = '$1', _='_'},
-        mnesia:select(push_backend, [{MatchHead, [], ['$1']}])
-    end,
-    case mnesia:transaction(F) of
-        {atomic, AppNames} ->
-            Identities =
-            lists:map(
-                fun(A) ->
-                    AppName = case is_binary(A) of
-                        true -> A;
-                        false -> <<"any">>
-                    end,
-                    #xmlel{name = <<"identity">>,
-                           attrs = [{<<"category">>, <<"app-server">>},
-                                    {<<"type">>, AppName}],
-                           children = []}
-                end,
-                AppNames),
-            Identities ++ Acc;
-
-        _ ->
-            Acc
-    end;
-
-on_disco_reg_identity(Acc, _From, _To, _Node, _Lang) ->
-    Acc.
-               
-on_disco_sm_identity(Acc, From, To, <<"">>, _Lang) ->
-    FromL = jlib:jid_tolower(From),
-    ToL = jlib:jid_tolower(To),
-    case jlib:jid_remove_resource(FromL) of
-        ToL ->
-            F = fun() ->
-                case mnesia:read({push_user, {To#jid.luser, To#jid.lserver}}) of
-                    [] ->
-                        make_config_form(get_global_config(To#jid.lserver)) ++
-                        Acc;
-                    [#push_user{config = Config}] ->
-                        make_config_form(Config) ++ Acc
-                end
-            end,
-            case mnesia:transaction(F) of
-                {atomic, Elements} -> Elements;
-                _ -> Acc
-            end;
-
-        _ -> Acc
-    end;
-
-on_disco_sm_identity(Acc, _From, _To, _Node, _Lang) ->
-    Acc.
 
 %-------------------------------------------------------------------------
 % gen_mod callbacks
@@ -1762,28 +1310,11 @@ start(Host, _Opts) ->
     % TODO: send push notifications (event server available) to all push users
 
     %%% FIXME: haven't thought about IQDisc parameter
-    gen_iq_handler:add_iq_handler(ejabberd_sm, Host, ?NS_PUSH, ?MODULE,
-                                  process_iq, one_queue),
-    ejabberd_hooks:add(mgmt_queue_add_hook, Host, ?MODULE, on_store_stanza,
-                       50),
-    ejabberd_hooks:add(unset_presence_hook, Host, ?MODULE, on_unset_presence,
-                       70),
-    ejabberd_hooks:add(mgmt_resume_session_hook, Host, ?MODULE,
-                       on_resume_session, 50),
-    ejabberd_hooks:add(mgmt_wait_for_resume_hook, Host, ?MODULE,
-                       on_wait_for_resume, 50),
-    ejabberd_hooks:add(disco_sm_features, Host, ?MODULE,
-                       on_disco_sm_features, 50),
-    ejabberd_hooks:add(user_receive_packet, Host, ?MODULE,
-                       on_affiliation_removal, 50),
-    ejabberd_hooks:add(user_available_hook, Host, ?MODULE,
-                       resend_packets, 50),
+    gen_iq_handler:add_iq_handler(ejabberd_sm, Host, ?NS_PUSH, ?MODULE, process_iq, one_queue),
+    ejabberd_hooks:add(user_receive_packet, Host, ?MODULE, on_affiliation_removal, 50),
     ejabberd_hooks:add(remove_user, Host, ?MODULE, on_remove_user, 50),
-    % FIXME: disco_sm_info is not implemented in mod_disco!
-    %ejabberd_hooks:add(disco_sm_info, Host, ?MODULE, on_disco_sm_info, 50),
     F = fun() ->
         add_backends(Host),
-        add_disco_hooks(Host),
         notify_previous_users(Host)
     end,
     case mnesia:transaction(F) of
@@ -1801,23 +1332,8 @@ start(Host, _Opts) ->
 
 stop(Host) ->
     gen_iq_handler:remove_iq_handler(ejabberd_sm, Host, ?NS_PUSH),
-    ejabberd_hooks:delete(mgmt_queue_add_hook, Host, ?MODULE,
-                          on_store_stanza, 50),
-    ejabberd_hooks:delete(unset_presence_hook, Host, ?MODULE, on_unset_presence,
-                          70),
-    ejabberd_hooks:delete(mgmt_resume_session_hook, Host, ?MODULE,
-                          on_resume_session, 50),
-    ejabberd_hooks:delete(mgmt_wait_for_resume_hook, Host, ?MODULE,
-                          on_wait_for_resume, 50),
-    ejabberd_hooks:delete(disco_sm_features, Host, ?MODULE,
-                          on_disco_sm_features, 50),
-    ejabberd_hooks:delete(user_receive_packet, Host, ?MODULE,
-                          on_affiliation_removal, 50),
-    ejabberd_hooks:delete(user_available_hook, Host, ?MODULE,
-                          resend_packets, 50),
+    ejabberd_hooks:delete(user_receive_packet, Host, ?MODULE, on_affiliation_removal, 50),
     ejabberd_hooks:delete(remove_user, Host, ?MODULE, on_remove_user, 50),
-    % FIXME:
-    %ejabberd_hooks:delete(disco_sm_info, Host, ?MODULE, on_disco_sm_info, 50),
     F = fun() ->
         mnesia:foldl(
             fun(Backend) ->
@@ -1825,14 +1341,7 @@ stop(Host) ->
                 PubsubHost = Backend#push_backend.pubsub_host,
                 ejabberd_router:unregister_route(RegHost),
                 ejabberd_router:unregister_route(PubsubHost),
-                ejabberd_hooks:delete(adhoc_local_commands, RegHost, ?MODULE,
-                                      process_adhoc_command, 75),
-                ejabberd_hooks:delete(disco_sm_identity, Host, ?MODULE,
-                                      on_disco_sm_identity, 49),
-                ejabberd_hooks:delete(disco_local_identity, RegHost, ?MODULE,
-                                      on_disco_reg_identity, 50),
-                ejabberd_hooks:delete(disco_info, Host, ?MODULE,
-                                      on_disco_pubsub_info, 50),
+                ejabberd_hooks:delete(adhoc_local_commands, RegHost, ?MODULE, process_adhoc_command, 75),
                 {Local, Remote} =
                 lists:partition(fun(N) -> N =:= node() end,
                                 Backend#push_backend.cluster_nodes),
@@ -2025,7 +1534,7 @@ get_backend_opts(RawOptsList) ->
             jlib:string_to_jid(proplists:get_value(pubsub_host, Opts)),
             RawType = proplists:get_value(type, Opts),
             Type =
-            case lists:member(RawType, [apns, gcm, mozilla, ubuntu, wns]) of
+            case lists:member(RawType, [apns]) of
                 true -> RawType
             end,
             AppName = proplists:get_value(app_name, Opts, <<"any">>),
@@ -2142,26 +1651,6 @@ filter_payload(Payload, Config) ->
             proplists:get_value(ConfigOpt, Config)
         end,
         Payload).
-
-%-------------------------------------------------------------------------
-
--spec(set_pending
-(
-    Resource :: binary(),
-    NewVal :: boolean(),
-    Subscrs :: [subscription()])
-    -> [subscription()]
-).
-
-set_pending(Resource, NewVal, Subscrs) ->
-    {MatchingSubscr, NotMatchingSubscrs} =
-    lists:partition(
-        fun(S) -> S#subscription.resource =:= Resource end,
-        Subscrs),
-    case MatchingSubscr of
-        [] -> Subscrs;
-        [S] -> [S#subscription{pending = NewVal}|NotMatchingSubscrs]
-    end.
 
 %-------------------------------------------------------------------------
 % general utility functions
@@ -2420,3 +1909,9 @@ binary_to_boolean(Binary, DefaultResult, InvalidResult) ->
 ljid_to_jid({LUser, LServer, LResource}) ->
     #jid{user = LUser, server = LServer, resource = LResource,
          luser = LUser, lserver = LServer, lresource = LResource}.
+
+
+%% Local Variables:
+%% eval: (setq-local flycheck-erlang-include-path (list "../../../../src/ejabberd/include/"))
+%% eval: (setq-local flycheck-erlang-library-path (list "/usr/local/Cellar/ejabberd/16.09/lib/cache_tab-1.0.4/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/ejabberd-16.09/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/esip-1.0.8/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/ezlib-1.0.1/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/fast_tls-1.0.7/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/fast_xml-1.1.15/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/fast_yaml-1.0.6/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/goldrush-0.1.8/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/iconv-1.0.2/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/jiffy-0.14.7/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/lager-3.2.1/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/luerl-1/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/p1_mysql-1.0.1/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/p1_oauth2-0.6.1/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/p1_pam-1.0.0/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/p1_pgsql-1.0.1/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/p1_utils-1.0.5/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/stringprep-1.0.6/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/stun-1.0.7/ebin"))
+%% End:
