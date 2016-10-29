@@ -44,11 +44,7 @@
 -include("adhoc.hrl").
 
 -define(MODULE_APNS, mod_push_apns).
-
--define(NS_PUSH, <<"urn:xmpp:push:0">>).
-
 -define(OFFLINE_HOOK_PRIO, 1). % must fire before mod_offline (which has 50)
-
 -define(MAX_INT, 4294967295).
 
 %-------------------------------------------------------------------------
@@ -403,22 +399,8 @@ process_adhoc_command(Acc, From, #jid{lserver = LServer},
                 end
             end;
 
-        <<"unregister-push">> ->
-            fun() ->
-                Parsed = parse_form([XData], undefined, [], []),
-                case Parsed of
-                    {result, []} ->
-                        unregister_client(From, undefined);
-
-                    not_found ->
-                        unregister_client(From, undefined);
-
-                    _ -> error
-                end
-            end;
-
+        <<"unregister-push">> -> fun() -> unregister_client(From, undefined) end;
         <<"list-push-registrations">> -> fun() -> list_registrations(From) end;
-
         _ -> unknown
     end,
     Result = case Action of
@@ -544,7 +526,6 @@ start(Host, _Opts) ->
 ).
 
 stop(Host) ->
-    gen_iq_handler:remove_iq_handler(ejabberd_sm, Host, ?NS_PUSH),
     ejabberd_hooks:delete(remove_user, Host, ?MODULE, on_remove_user, 50),
     ejabberd_hooks:delete(offline_message_hook, Host, ?MODULE, on_offline_message, ?OFFLINE_HOOK_PRIO),
     F = fun() ->
@@ -583,17 +564,27 @@ depends(_, _) ->
 
 %-------------------------------------------------------------------------
 
-mod_opt_type(iqdisc) -> fun gen_iq_handler:check_type/1;
-mod_opt_type(include_senders) -> fun(B) when is_boolean(B) -> B end;
-mod_opt_type(include_message_count) -> fun(B) when is_boolean(B) -> B end;
-mod_opt_type(include_subscription_count) -> fun(B) when is_boolean(B) -> B end;
-mod_opt_type(include_message_bodies) -> fun(B) when is_boolean(B) -> B end;
-mod_opt_type(access_backends) -> fun(A) when is_atom(A) -> A end;
-mod_opt_type(certfile) -> fun(B) when is_binary(B) -> B end;
 mod_opt_type(backends) -> fun ?MODULE:get_backend_opts/1;
-mod_opt_type(_) ->
-    [iqdisc, include_senders, include_message_count, include_subscription_count,
-     include_message_bodies, access_backends, certfile, backends].
+mod_opt_type(_) -> [backends].
+
+get_backend_opts(RawOptsList) ->
+    lists:map(
+        fun(Opts) ->
+            RegHostJid =
+            jlib:string_to_jid(proplists:get_value(register_host, Opts)),
+            RawType = proplists:get_value(type, Opts),
+            Type =
+            case lists:member(RawType, [apns]) of
+                true -> RawType
+            end,
+            AppName = proplists:get_value(app_name, Opts, <<"any">>),
+            CertFile = proplists:get_value(certfile, Opts),
+            AuthKey = proplists:get_value(auth_key, Opts),
+            PackageSid = proplists:get_value(package_sid, Opts),
+            {RegHostJid, Type, AppName, CertFile, AuthKey,
+             PackageSid}
+        end,
+        RawOptsList).
 
 %-------------------------------------------------------------------------
 % mod_push utility functions
@@ -641,27 +632,6 @@ parse_backends(RawBackendOptsList, DefaultCertFile) ->
         end
     end,
     lists:foldl(MakeBackend, [], BackendOptsList).
-
-%-------------------------------------------------------------------------
-
-get_backend_opts(RawOptsList) ->
-    lists:map(
-        fun(Opts) ->
-            RegHostJid =
-            jlib:string_to_jid(proplists:get_value(register_host, Opts)),
-            RawType = proplists:get_value(type, Opts),
-            Type =
-            case lists:member(RawType, [apns]) of
-                true -> RawType
-            end,
-            AppName = proplists:get_value(app_name, Opts, <<"any">>),
-            CertFile = proplists:get_value(certfile, Opts),
-            AuthKey = proplists:get_value(auth_key, Opts),
-            PackageSid = proplists:get_value(package_sid, Opts),
-            {RegHostJid, Type, AppName, CertFile, AuthKey,
-             PackageSid}
-        end,
-        RawOptsList).
 
 %-------------------------------------------------------------------------
 
@@ -912,6 +882,11 @@ make_worker_name(RegisterHost, Type) ->
 ljid_to_jid({LUser, LServer, LResource}) ->
     #jid{user = LUser, server = LServer, resource = LResource,
          luser = LUser, lserver = LServer, lresource = LResource}.
+
+
+health() ->
+    Hosts = ejabberd_config:get_myhosts(),
+    {[{ets:lookup(hooks, {offline_message_hook, H})} || H <- Hosts]}.
 
 
 %% Local Variables:

@@ -1,0 +1,11 @@
+{application, mod_push,
+ [{description, "mod_push"},
+  {vsn, "git"},
+  {modules, []},
+  {registered, []},
+  {applications, [kernel,
+                  stdlib,
+                  sasl,
+                  inets,
+                  ssl]}
+ ]}.
