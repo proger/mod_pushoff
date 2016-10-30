@@ -1,10 +1,4 @@
 %%%----------------------------------------------------------------------
-%%% File    : mod_push.erl
-%%% Author  : Christian Ulrich <christian@rechenwerk.net>
-%%% Purpose : implements XEP-0357 Push and an IM-focussed app server
-%%%           
-%%% Created : 22 Dec 2014 by Christian Ulrich <christian@rechenwerk.net>
-%%%
 %%%
 %%% Copyright (C) 2015  Christian Ulrich
 %%%
@@ -24,11 +18,13 @@
 %%%
 %%%----------------------------------------------------------------------
 
--module(mod_push).
+-module(mod_pushoff).
 
 -author('christian@rechenwerk.net').
 
 -behaviour(gen_mod).
+
+-compile([export_all]).
 
 -export([start/2, stop/1, depends/2,
          mod_opt_type/1,
@@ -43,7 +39,7 @@
 -include("jlib.hrl").
 -include("adhoc.hrl").
 
--define(MODULE_APNS, mod_push_apns).
+-define(MODULE_APNS, mod_pushoff_apns).
 -define(OFFLINE_HOOK_PRIO, 1). % must fire before mod_offline (which has 50)
 -define(MAX_INT, 4294967295).
 
@@ -95,13 +91,13 @@
          certfile = <<"">> :: binary()}).
 
 %% mnesia table
--record(push_registration, {bare_jid :: bare_jid(),
+-record(pushoff_registration, {bare_jid :: bare_jid(),
                             token :: binary(),
                             backend_id :: integer(),
                             timestamp = now() :: erlang:timestamp()}).
 
 %% mnesia table
--record(push_backend,
+-record(pushoff_backend,
         {id :: integer(),
          register_host :: binary(),
          type :: backend_type(),
@@ -117,8 +113,8 @@
     'pending-subscription-count' | 'last-message-body'.
 -type payload_value() :: binary() | integer().
 -type payload() :: [{payload_key(), payload_value()}].
--type push_backend() :: #push_backend{}.
--type push_registration() :: #push_registration{}.
+-type pushoff_backend() :: #pushoff_backend{}.
+-type pushoff_registration() :: #pushoff_registration{}.
 
 %-------------------------------------------------------------------------
 
@@ -137,25 +133,25 @@ register_client(#jid{luser = LUser,
                      lresource = _LResource}, RegisterHost, Type, Token) ->
     F = fun() ->
         MatchHeadBackend =
-        #push_backend{register_host = RegisterHost, type = Type, _='_'},
+        #pushoff_backend{register_host = RegisterHost, type = Type, _='_'},
         MatchingBackends =
-        mnesia:select(push_backend, [{MatchHeadBackend, [], ['$_']}]),
+        mnesia:select(pushoff_backend, [{MatchHeadBackend, [], ['$_']}]),
         case MatchingBackends of
-            [#push_backend{id = BackendId}|_] ->
+            [#pushoff_backend{id = BackendId}|_] ->
                 ?DEBUG("+++++ register_client: found backend", []),
                 MatchHeadReg =
-                    #push_registration{bare_jid = {LUser, LServer}, _='_'},
+                    #pushoff_registration{bare_jid = {LUser, LServer}, _='_'},
                 ExistingReg =
-                    mnesia:select(push_registration, [{MatchHeadReg, [], ['$_']}]),
+                    mnesia:select(pushoff_registration, [{MatchHeadReg, [], ['$_']}]),
                 Registration =
                     case ExistingReg of
                         [] ->
-                            #push_registration{bare_jid = {LUser, LServer},
+                            #pushoff_registration{bare_jid = {LUser, LServer},
                                                token = Token,
                                                backend_id = BackendId};
 
                     [OldReg] ->
-                        OldReg#push_registration{token = Token,
+                        OldReg#pushoff_registration{token = Token,
                                                  backend_id = BackendId,
                                                  timestamp = now()}
                 end,
@@ -190,15 +186,15 @@ unregister_client(#jid{luser = LUser, lserver = LServer}, Ts) ->
 unregister_client({LUser, LServer}, Timestamp) ->
     F = fun() ->
                 MatchHead =
-                    #push_registration{bare_jid = {LUser, LServer}, timestamp = Timestamp, _='_'},
+                    #pushoff_registration{bare_jid = {LUser, LServer}, timestamp = Timestamp, _='_'},
                 MatchingReg =
-                    mnesia:select(push_registration, [{MatchHead, [], ['$_']}]),
+                    mnesia:select(pushoff_registration, [{MatchHead, [], ['$_']}]),
                 case MatchingReg of
                     [] -> error;
 
                     [Reg] ->
                         ?DEBUG("+++++ deleting registration of user ~p",
-                               [Reg#push_registration.bare_jid]),
+                               [Reg#pushoff_registration.bare_jid]),
                         mnesia:delete_object(Reg),
                         ok
                 end
@@ -214,12 +210,12 @@ unregister_client({LUser, LServer}, Timestamp) ->
 %-------------------------------------------------------------------------
 
 -spec(list_registrations
-(jid()) -> {error, xmlelement()} | {registrations, [push_registration()]}).
+(jid()) -> {error, xmlelement()} | {registrations, [pushoff_registration()]}).
 
 list_registrations(#jid{luser = LUser, lserver = LServer}) ->
     F = fun() ->
-        MatchHead = #push_registration{bare_jid = {LUser, LServer}, _='_'},
-        mnesia:select(push_registration, [{MatchHead, [], ['$_']}])
+        MatchHead = #pushoff_registration{bare_jid = {LUser, LServer}, _='_'},
+        mnesia:select(pushoff_registration, [{MatchHead, [], ['$_']}])
     end,
     case mnesia:transaction(F) of
         {aborted, _} -> {error, ?ERR_INTERNAL_SERVER_ERROR};
@@ -235,7 +231,7 @@ on_offline_message(_From, To, Stanza) ->
     case mnesia:transaction(F) of
         {atomic, ok} -> ok;
         {atomic, not_subscribed} ->
-            ?DEBUG("+++++ mod_push offline: ~p is not_subscribed", [To]),
+            ?DEBUG("+++++ mod_pushoff offline: ~p is not_subscribed", [To]),
             ok;
         {aborted, Error} ->
             ?DEBUG("+++++ error in on_offline_message: ~p", [Error]),
@@ -264,16 +260,16 @@ dispatch(Stanzas, ToUserJid) ->
                   Payload :: payload()) -> dispatched | not_subscribed).
 
 do_dispatch(UserBare = {LUser, LServer}, Payload) ->
-    SelectedReg = mnesia:read({push_registration, {LUser, LServer}}),
+    SelectedReg = mnesia:read({pushoff_registration, {LUser, LServer}}),
     case SelectedReg of
         [] -> not_subscribed;
        
-        [#push_registration{bare_jid = _StoredUserBare,
+        [#pushoff_registration{bare_jid = _StoredUserBare,
                             token = Token,
                             backend_id = BackendId,
                             timestamp = Timestamp}] ->
             DisableArgs = {UserBare, Timestamp},
-            [#push_backend{worker = Worker}] = mnesia:read({push_backend, BackendId}),
+            [#pushoff_backend{worker = Worker}] = mnesia:read({pushoff_backend, BackendId}),
 
             gen_server:cast(Worker, {dispatch, UserBare, Payload, Token, DisableArgs})
     end.
@@ -321,18 +317,18 @@ add_backends(Host) ->
     Backends = parse_backends(BackendOpts, CertFile),
     lists:foreach(
         fun({Backend, AuthData}) ->
-            RegisterHost = Backend#push_backend.register_host,
+            RegisterHost = Backend#pushoff_backend.register_host,
             %ejabberd_router:register_route(RegisterHost),
             ejabberd_hooks:add(adhoc_local_commands, RegisterHost, ?MODULE, process_adhoc_command, 75),
             ?INFO_MSG("added adhoc command handler for app server ~p",
                       [RegisterHost]),
             NewBackend =
-            case mnesia:read({push_backend, Backend#push_backend.id}) of
+            case mnesia:read({pushoff_backend, Backend#pushoff_backend.id}) of
                 [] -> Backend;
-                [#push_backend{cluster_nodes = Nodes}] ->
+                [#pushoff_backend{cluster_nodes = Nodes}] ->
                     NewNodes =
-                    lists:merge(Nodes, Backend#push_backend.cluster_nodes),
-                    Backend#push_backend{cluster_nodes = NewNodes}
+                    lists:merge(Nodes, Backend#pushoff_backend.cluster_nodes),
+                    Backend#pushoff_backend{cluster_nodes = NewNodes}
             end,
             mnesia:write(NewBackend),
             start_worker(Backend, AuthData)
@@ -345,12 +341,12 @@ add_backends(Host) ->
 
 -spec(start_worker
 (
-    Backend :: push_backend(),
+    Backend :: pushoff_backend(),
     AuthData :: auth_data())
     -> ok
 ).
 
-start_worker(#push_backend{worker = Worker, type = Type},
+start_worker(#pushoff_backend{worker = Worker, type = Type},
              #auth_data{auth_key = AuthKey,
                         package_sid = PackageSid,
                         certfile = CertFile}) ->
@@ -506,8 +502,8 @@ mnesia_set_from_record({Name, Fields}) ->
     end.
 
 start(Host, _Opts) ->
-    mnesia_set_from_record(?RECORD(push_registration)),
-    mnesia_set_from_record(?RECORD(push_backend)),
+    mnesia_set_from_record(?RECORD(pushoff_registration)),
+    mnesia_set_from_record(?RECORD(pushoff_backend)),
 
     ejabberd_hooks:add(remove_user, Host, ?MODULE, on_remove_user, 50),
     ejabberd_hooks:add(offline_message_hook, Host, ?MODULE, on_offline_message, ?OFFLINE_HOOK_PRIO),
@@ -531,30 +527,30 @@ stop(Host) ->
     F = fun() ->
         mnesia:foldl(
             fun(Backend) ->
-                RegHost = Backend#push_backend.register_host,
+                RegHost = Backend#pushoff_backend.register_host,
                 %ejabberd_router:unregister_route(RegHost),
                 ejabberd_hooks:delete(adhoc_local_commands, RegHost, ?MODULE, process_adhoc_command, 75),
                 {Local, Remote} =
                 lists:partition(fun(N) -> N =:= node() end,
-                                Backend#push_backend.cluster_nodes),
+                                Backend#pushoff_backend.cluster_nodes),
                 case Local of
                     [] -> ok;
                     _ ->
                         case Remote of
                             [] ->
-                                mnesia:delete({push_backend, Backend#push_backend.id});
+                                mnesia:delete({pushoff_backend, Backend#pushoff_backend.id});
                             _ ->
                                 mnesia:write(
-                                    Backend#push_backend{cluster_nodes = Remote})
+                                    Backend#pushoff_backend{cluster_nodes = Remote})
                         end,
                         supervisor:terminate_child(ejabberd_sup,
-                                                   Backend#push_backend.worker),
+                                                   Backend#pushoff_backend.worker),
                         supervisor:delete_child(ejabberd_sup,
-                                                Backend#push_backend.worker)
+                                                Backend#pushoff_backend.worker)
                 end
             end,
             ok,
-            push_backends,
+            pushoff_backends,
             write)
        end,
     mnesia:transaction(F).
@@ -587,14 +583,14 @@ get_backend_opts(RawOptsList) ->
         RawOptsList).
 
 %-------------------------------------------------------------------------
-% mod_push utility functions
+% mod_pushoff utility functions
 %-------------------------------------------------------------------------
 
 -spec(parse_backends
 (
     BackendOpts :: [any()],
     DefaultCertFile :: binary())
-    -> invalid | [{push_backend(), auth_data()}]
+    -> invalid | [{pushoff_backend(), auth_data()}]
 ).
 
 parse_backends(RawBackendOptsList, DefaultCertFile) ->
@@ -616,7 +612,7 @@ parse_backends(RawBackendOptsList, DefaultCertFile) ->
                            certfile = ChosenCertFile},
                 Worker = make_worker_name(RegHostJid#jid.lserver, Type),
                 Backend =
-                #push_backend{
+                #pushoff_backend{
                    id = BackendId,
                    register_host = RegHostJid#jid.lserver,
                    type = Type,
@@ -626,7 +622,7 @@ parse_backends(RawBackendOptsList, DefaultCertFile) ->
                 [{Backend, AuthData}|Acc];
 
             false ->
-                ?ERROR_MSG("option certfile not defined for mod_push backend",
+                ?ERROR_MSG("option certfile not defined for mod_pushoff backend",
                            []),
                 Acc
         end

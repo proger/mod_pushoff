@@ -1,5 +1,5 @@
-{application, mod_push,
- [{description, "mod_push"},
+{application, mod_pushoff,
+ [{description, "mod_pushoff"},
   {vsn, "git"},
   {modules, []},
   {registered, []},

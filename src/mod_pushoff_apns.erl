@@ -1,9 +1,4 @@
 %%%----------------------------------------------------------------------
-%%% File    : mod_push_apns.erl
-%%% Author  : Christian Ulrich <christian@rechenwerk.net>
-%%% Purpose : Send push notifications to the Apple Push Notification Service
-%%% Created : 07 Feb 2015 by Christian Ulrich <christian@rechenwerk.net>
-%%%
 %%%
 %%% Copyright (C) 2015  Christian Ulrich
 %%%
@@ -23,7 +18,7 @@
 %%%
 %%%----------------------------------------------------------------------
 
--module(mod_push_apns).
+-module(mod_pushoff_apns).
 
 -author('christian@rechenwerk.net').
 
@@ -71,7 +66,7 @@
 %-------------------------------------------------------------------------
 
 init([_AuthKey, _PackageSid, CertFile]) ->
-    ?INFO_MSG("+++++++++ mod_push_apns:init, certfile = ~p", [CertFile]),
+    ?INFO_MSG("+++++++++ mod_pushoff_apns:init, certfile = ~p", [CertFile]),
     inets:start(),
     crypto:start(),
     ssl:start(),
@@ -128,12 +123,12 @@ handle_info({ssl, _Socket, Data},
 
                         8 ->
                             ?ERROR_MSG("APNS error: invalid token for ~p ~p", [UserB, Token]),
-                            mod_push:unregister_client(DisableArgs),
+                            mod_pushoff:unregister_client(DisableArgs),
                             State#state{pending_list = NewPending};
 
                         S ->
                             ?INFO_MSG("non-recoverable APNS error: ~p", [S]),
-                            mod_push:unregister_client(DisableArgs),
+                            mod_pushoff:unregister_client(DisableArgs),
                             State#state{pending_list = NewPending}
                     end
             end;
@@ -269,7 +264,7 @@ handle_info(send, #state{certfile = CertFile,
     {noreply, NewState};
 
 handle_info(Info, State) ->
-    ?DEBUG("+++++++ mod_push_apns received unexpected signal ~p", [Info]),
+    ?DEBUG("+++++++ mod_pushoff_apns received unexpected signal ~p", [Info]),
     {noreply, State}.
 
 %-------------------------------------------------------------------------

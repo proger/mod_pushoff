@@ -1,0 +1,5 @@
+author: "Vlad Ki <proger@wilab.org.ua>"
+category: "service"
+summary: "Push Notifications for Offline Messages"
+home: "https://github.com/proger/mod_pushoff"
+url: "https://github.com/proger/mod_pushoff"

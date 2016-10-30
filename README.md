@@ -1,6 +1,6 @@
-# mod_push
+# mod_pushoff
 
-mod_push implements push for ejabberd.
+mod_pushoff implements push for ejabberd.
 
 Currently supporting [APNS (Apple push notification service)](https://developer.apple.com/library/ios/documentation/NetworkingInternet/Conceptual/RemoteNotificationsPG/Chapters/ApplePushService.html).
 
@@ -12,14 +12,14 @@ Currently supporting [APNS (Apple push notification service)](https://developer.
 ## Installation
 
 ```bash
-git clone https://github.com/royneary/mod_push.git
+git clone https://github.com/proger/mod_pushoff.git
 # copy the source code folder to the module sources folder of your ejabberd
 # installation (substitute ~ for the home directory of the user that runs ejabberd)
-sudo cp -R mod_push ~/.ejabberd-modules/sources/
-# if done right ejabberdctl will list mod_push as available module
+sudo cp -R mod_pushoff ~/.ejabberd-modules/sources/
+# if done right ejabberdctl will list mod_pushoff as available module
 ejabberdctl modules_available
-# automatically compile and install mod_push
-ejabberdctl module_install mod_push 
+# automatically compile and install mod_pushoff
+ejabberdctl module_install mod_pushoff
 ```
 
 ## Example configuration
@@ -27,7 +27,7 @@ ejabberdctl module_install mod_push
 ```yaml
 modules:
   mod_offline: {}
-  mod_push:
+  mod_pushoff:
     backends:
       -
         type: apns
@@ -38,7 +38,7 @@ modules:
 
 ## Usage
 
-Clients can register for push notifications by sending adhoc requests using XEP-0004.
+Clients can register for push notifications by sending XEP-0004 adhoc requests.
 
 These are the available adhoc commands:
 
@@ -63,3 +63,7 @@ Example:
 ```
 
 See [client.py](client.py) for a reference client.
+
+## History
+
+This module is based on [mod_push](https://github.com/royneary/mod_push).
