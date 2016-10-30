@@ -35,8 +35,6 @@
 
 -include("logger.hrl").
 
-%-define(PUSH_URL, "gateway.push.apple.com").
--define(PUSH_URL, "gateway.sandbox.push.apple.com").
 -define(APNS_PORT, 2195).
 -define(SSL_TIMEOUT, 3000).
 -define(MAX_PAYLOAD_SIZE, 2048).
@@ -63,10 +61,11 @@
          retry_timer :: reference(),
          pending_timestamp :: erlang:timestamp(),
          retry_timestamp :: erlang:timestamp(),
-         message_id :: pos_integer()}).
+         message_id :: pos_integer(),
+         gateway :: string()}).
 
-init([_AuthKey, _PackageSid, CertFile]) ->
-    ?INFO_MSG("+++++++++ mod_pushoff_apns:init, certfile = ~p", [CertFile]),
+init([CertFile, Gateway]) ->
+    ?INFO_MSG("+++++++++ mod_pushoff_apns:init, certfile = ~p, gateway ~p", [CertFile, Gateway]),
     inets:start(),
     crypto:start(),
     ssl:start(),
@@ -76,7 +75,8 @@ init([_AuthKey, _PackageSid, CertFile]) ->
                 retry_list = [],
                 pending_timer = make_ref(),
                 retry_timer = make_ref(),
-                message_id = 0}}.
+                message_id = 0,
+                gateway = Gateway}}.
 
 handle_info({ssl, _Socket, Data},
             #state{pending_list = PendingList,
@@ -178,9 +178,10 @@ handle_info(send, #state{certfile = CertFile,
                          send_list = SendList,
                          retry_list = RetryList,
                          retry_timer = RetryTimer,
-                         message_id = MessageId} = State) ->
+                         message_id = MessageId,
+                         gateway = Gateway} = State) ->
     NewState =
-    case get_socket(OldSocket, CertFile) of
+    case get_socket(OldSocket, CertFile, Gateway) of
         {error, Reason} ->
             ?ERROR_MSG("connection to APNS failed: ~p", [Reason]),
             NewRetryList = pending_to_retry(PendingList, RetryList),
@@ -283,7 +284,7 @@ make_notifications(PendingList) ->
         <<"">>,
         PendingList).
 
-get_socket(OldSocket, CertFile) ->
+get_socket(OldSocket, CertFile, Gateway) ->
     case OldSocket of
         _Invalid when OldSocket =:= undefined;
                      OldSocket =:= error ->
@@ -295,7 +296,7 @@ get_socket(OldSocket, CertFile) ->
              {secure_renegotiate, true}],
              %{verify, verify_peer},
              %{cacertfile, CACertFile}],
-            case ssl:connect(?PUSH_URL, ?APNS_PORT, SslOpts, ?SSL_TIMEOUT) of
+            case ssl:connect(Gateway, ?APNS_PORT, SslOpts, ?SSL_TIMEOUT) of
                 {ok, S} -> S;
                 {error, E} -> {error, E}
             end;

@@ -85,9 +85,8 @@
 %-------------------------------------------------------------------------
 
 -record(auth_data,
-        {auth_key = <<"">> :: binary(),
-         package_sid = <<"">> :: binary(),
-         certfile = <<"">> :: binary()}).
+        {certfile = <<"">> :: binary(),
+         gateway = <<"">> :: binary()}).
 
 %% mnesia table
 -record(pushoff_registration, {bare_jid :: bare_jid(),
@@ -268,15 +267,11 @@ on_remove_user(User, Server) ->
 -spec(add_backends(Host :: binary()) -> ok | error).
 
 add_backends(Host) ->
-    CertFile =
-    gen_mod:get_module_opt(Host, ?MODULE, certfile,
-                           fun(C) when is_binary(C) -> C end,
-                           <<"">>),
     BackendOpts =
     gen_mod:get_module_opt(Host, ?MODULE, backends,
                            fun(O) when is_list(O) -> O end,
                            []),
-    Backends = parse_backends(BackendOpts, CertFile),
+    Backends = parse_backends(BackendOpts),
     lists:foreach(
         fun({Backend, AuthData}) ->
             RegisterHost = Backend#pushoff_backend.register_host,
@@ -304,9 +299,7 @@ add_backends(Host) ->
 -spec(start_worker(Backend :: pushoff_backend(), AuthData :: auth_data()) -> ok).
 
 start_worker(#pushoff_backend{worker = Worker, type = Type},
-             #auth_data{auth_key = AuthKey,
-                        package_sid = PackageSid,
-                        certfile = CertFile}) ->
+             #auth_data{certfile = CertFile, gateway = Gateway}) ->
     Module =
     proplists:get_value(Type,
                         [{apns, ?MODULE_APNS}]),
@@ -314,7 +307,7 @@ start_worker(#pushoff_backend{worker = Worker, type = Type},
     {Worker,
      {gen_server, start_link,
       [{local, Worker}, Module,
-       [AuthKey, PackageSid, CertFile], []]},
+       [CertFile, Gateway], []]},
      permanent, 1000, worker, [?MODULE]},
     supervisor:start_child(ejabberd_sup, BackendSpec).
 
@@ -516,38 +509,23 @@ get_backend_opts(RawOptsList) ->
             end,
             AppName = proplists:get_value(app_name, Opts, <<"any">>),
             CertFile = proplists:get_value(certfile, Opts),
-            AuthKey = proplists:get_value(auth_key, Opts),
-            PackageSid = proplists:get_value(package_sid, Opts),
-            {RegHostJid, Type, AppName, CertFile, AuthKey,
-             PackageSid}
+            Gateway = proplists:get_value(gateway, Opts),
+            {RegHostJid, Type, AppName, CertFile, Gateway}
         end,
         RawOptsList).
 
-%-------------------------------------------------------------------------
-% mod_pushoff utility functions
-%-------------------------------------------------------------------------
+-spec(parse_backends(BackendOpts :: [any()]) -> invalid |
+                                                [{pushoff_backend(), auth_data()}]).
 
--spec(parse_backends(BackendOpts :: [any()],
-                     DefaultCertFile :: binary()) -> invalid |
-                                                     [{pushoff_backend(), auth_data()}]).
-
-parse_backends(RawBackendOptsList, DefaultCertFile) ->
+parse_backends(RawBackendOptsList) ->
     BackendOptsList = get_backend_opts(RawBackendOptsList),
     MakeBackend =
-    fun({RegHostJid, Type, AppName, CertFile, AuthKey,
-         PackageSid}, Acc) ->
-        ChosenCertFile = case is_binary(CertFile) of
-            true -> CertFile;
-            false -> DefaultCertFile
-        end,
+    fun({RegHostJid, Type, AppName, ChosenCertFile, Gateway}, Acc) ->
         case is_binary(ChosenCertFile) and (ChosenCertFile =/= <<"">>) of
             true ->
-                BackendId =
-                erlang:phash2({RegHostJid#jid.lserver, Type}),
-                AuthData =
-                #auth_data{auth_key = AuthKey,
-                           package_sid = PackageSid,
-                           certfile = ChosenCertFile},
+                BackendId = erlang:phash2({RegHostJid#jid.lserver, Type}),
+                AuthData = #auth_data{certfile = ChosenCertFile,
+                                      gateway = Gateway},
                 Worker = make_worker_name(RegHostJid#jid.lserver, Type),
                 Backend =
                 #pushoff_backend{
@@ -560,8 +538,7 @@ parse_backends(RawBackendOptsList, DefaultCertFile) ->
                 [{Backend, AuthData}|Acc];
 
             false ->
-                ?ERROR_MSG("option certfile not defined for mod_pushoff backend",
-                           []),
+                ?ERROR_MSG("option certfile not defined for mod_pushoff backend", []),
                 Acc
         end
     end,

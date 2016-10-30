@@ -34,6 +34,9 @@ modules:
         register_host: "localhost"
         # make sure this pem file contains only one(!) certificate + key pair
         certfile: "/etc/ssl/private/apns_example_app.pem"
+        # sandbox is for testing
+        gateway: "gateway.push.apple.com"
+        #gateway: "gateway.sandbox.push.apple.com"
 ```
 
 ## Usage
