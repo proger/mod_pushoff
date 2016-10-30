@@ -1,6 +1,6 @@
 # mod_pushoff
 
-mod_pushoff implements push for ejabberd.
+mod_pushoff relays offline messages as push notifications.
 
 Currently supporting [Legacy APNS Binary Provider API](https://developer.apple.com/library/content/documentation/NetworkingInternet/Conceptual/RemoteNotificationsPG/BinaryProviderAPI.html#//apple_ref/doc/uid/TP40008194-CH13-SW1)
 
