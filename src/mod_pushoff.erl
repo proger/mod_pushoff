@@ -92,9 +92,9 @@
 
 %% mnesia table
 -record(pushoff_registration, {bare_jid :: bare_jid(),
-                            token :: binary(),
-                            backend_id :: integer(),
-                            timestamp = now() :: erlang:timestamp()}).
+                               token :: binary(),
+                               backend_id :: integer(),
+                               timestamp = now() :: erlang:timestamp()}).
 
 %% mnesia table
 -record(pushoff_backend,
@@ -147,13 +147,13 @@ register_client(#jid{luser = LUser,
                     case ExistingReg of
                         [] ->
                             #pushoff_registration{bare_jid = {LUser, LServer},
-                                               token = Token,
-                                               backend_id = BackendId};
+                                                  token = Token,
+                                                  backend_id = BackendId};
 
                     [OldReg] ->
                         OldReg#pushoff_registration{token = Token,
-                                                 backend_id = BackendId,
-                                                 timestamp = now()}
+                                                    backend_id = BackendId,
+                                                    timestamp = now()}
                 end,
                 mnesia:write(Registration),
                 ok;
@@ -265,9 +265,9 @@ do_dispatch(UserBare = {LUser, LServer}, Payload) ->
         [] -> not_subscribed;
        
         [#pushoff_registration{bare_jid = _StoredUserBare,
-                            token = Token,
-                            backend_id = BackendId,
-                            timestamp = Timestamp}] ->
+                               token = Token,
+                               backend_id = BackendId,
+                               timestamp = Timestamp}] ->
             DisableArgs = {UserBare, Timestamp},
             [#pushoff_backend{worker = Worker}] = mnesia:read({pushoff_backend, BackendId}),
 
