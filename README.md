@@ -2,7 +2,7 @@
 
 mod_pushoff implements push for ejabberd.
 
-Currently supporting [APNS (Apple push notification service)](https://developer.apple.com/library/ios/documentation/NetworkingInternet/Conceptual/RemoteNotificationsPG/Chapters/ApplePushService.html).
+Currently supporting [Legacy APNS Binary Provider API](https://developer.apple.com/library/content/documentation/NetworkingInternet/Conceptual/RemoteNotificationsPG/BinaryProviderAPI.html#//apple_ref/doc/uid/TP40008194-CH13-SW1)
 
 ## Prerequisites
 

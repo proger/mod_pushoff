@@ -24,8 +24,7 @@
 
 -behaviour(gen_mod).
 
--compile([export_all]).
-
+-compile(export_all).
 -export([start/2, stop/1, depends/2,
          mod_opt_type/1,
          get_backend_opts/1,
@@ -33,7 +32,7 @@
          on_remove_user/2,
          process_adhoc_command/4,
          unregister_client/1,
-         check_secret/2]).
+         health/0]).
 
 -include("logger.hrl").
 -include("jlib.hrl").
@@ -108,25 +107,15 @@
 -type auth_data() :: #auth_data{}.
 -type backend_type() :: apns.
 -type bare_jid() :: {binary(), binary()}.
--type payload_key() ::
-    'last-message-sender' | 'last-subscription-sender' | 'message-count' |
-    'pending-subscription-count' | 'last-message-body'.
 -type payload_value() :: binary() | integer().
--type payload() :: [{payload_key(), payload_value()}].
+-type payload() :: [{atom() | binary(), payload_value()}].
 -type pushoff_backend() :: #pushoff_backend{}.
 -type pushoff_registration() :: #pushoff_registration{}.
 
 %-------------------------------------------------------------------------
 
--spec(register_client
-(
-    User :: jid(),
-    RegisterHost :: binary(),
-    Type :: backend_type(),
-    Token :: binary()
-)
-    -> {registered, ok}
-).
+-spec(register_client(User :: jid(), RegisterHost :: binary(),
+                      Type :: backend_type(), Token :: binary()) -> {registered, ok}).
 
 register_client(#jid{luser = LUser,
                      lserver = LServer,
@@ -173,20 +162,20 @@ register_client(#jid{luser = LUser,
 
 unregister_client({U, T}) -> unregister_client(U, T).
 
--spec(unregister_client
-(
-    BareJid :: bare_jid(),
-    Timestamp :: erlang:timestamp())
-    -> error | {error, xmlelement()} | {unregistered, ok} |
-       {unregistered, [binary()]}
-).
+-spec(unregister_client(BareJid :: bare_jid(),
+                        Timestamp :: erlang:timestamp()) -> error |
+                                                            {error, xmlelement()} |
+                                                            {unregistered, ok} |
+                                                            {unregistered, [binary()]}).
 
 unregister_client(#jid{luser = LUser, lserver = LServer}, Ts) ->
     unregister_client({LUser, LServer}, Ts);
 unregister_client({LUser, LServer}, Timestamp) ->
     F = fun() ->
                 MatchHead =
-                    #pushoff_registration{bare_jid = {LUser, LServer}, timestamp = Timestamp, _='_'},
+                    #pushoff_registration{bare_jid = {LUser, LServer},
+                                          timestamp = Timestamp,
+                                          _='_'},
                 MatchingReg =
                     mnesia:select(pushoff_registration, [{MatchHead, [], ['$_']}]),
                 case MatchingReg of
@@ -209,8 +198,8 @@ unregister_client({LUser, LServer}, Timestamp) ->
                                          
 %-------------------------------------------------------------------------
 
--spec(list_registrations
-(jid()) -> {error, xmlelement()} | {registrations, [pushoff_registration()]}).
+-spec(list_registrations(jid()) -> {error, xmlelement()} |
+                                   {registrations, [pushoff_registration()]}).
 
 list_registrations(#jid{luser = LUser, lserver = LServer}) ->
     F = fun() ->
@@ -224,14 +213,28 @@ list_registrations(#jid{luser = LUser, lserver = LServer}) ->
 
 %-------------------------------------------------------------------------
 
--spec(on_offline_message(From :: jid(), To :: jid(), Stanza :: xmlelement()) -> any()).
+-spec(on_offline_message(From :: jid(), To :: jid(), Stanza :: xmlelement()) -> ok).
 
-on_offline_message(_From, To, Stanza) ->
-    F = fun() -> dispatch([{now(), Stanza}], To) end,
-    case mnesia:transaction(F) of
-        {atomic, ok} -> ok;
-        {atomic, not_subscribed} ->
-            ?DEBUG("+++++ mod_pushoff offline: ~p is not_subscribed", [To]),
+on_offline_message(From, To = #jid{luser = LUser, lserver = LServer}, Stanza) ->
+    Transaction =
+        fun() ->
+                Regs = mnesia:read({pushoff_registration, {LUser, LServer}}),
+                Backends = case Regs of
+                               [#pushoff_registration{backend_id = BackendId}] ->
+                                   mnesia:read({pushoff_backend, BackendId});
+                               _ -> []
+                           end,
+                {Regs, Backends}
+        end,
+    case mnesia:transaction(Transaction) of
+        {atomic, {[], _}} ->
+            ?DEBUG("+++++ mod_pushoff dispatch: ~p is not_subscribed", [To]),
+            ok;
+        {atomic, {Regs, []}} ->
+            ?DEBUG("+++++ mod_pushoff dispatch: no backends found for ~p", [Regs]),
+            ok;
+        {atomic, {[Reg], [Backend]}} ->
+            dispatch(From, Reg, Stanza, Backend),
             ok;
         {aborted, Error} ->
             ?DEBUG("+++++ error in on_offline_message: ~p", [Error]),
@@ -240,70 +243,29 @@ on_offline_message(_From, To, Stanza) ->
 
 %-------------------------------------------------------------------------
 
--spec(dispatch(Stanzas :: [{erlang:timestamp(), xmlelement()}],
-               UserJid :: jid()) -> ok | not_subscribed).
+-spec(dispatch(From :: jid(), To :: pushoff_registration(), Stanza :: xmlelement(),
+               Backend :: pushoff_backend()) -> ok).
 
-dispatch(Stanzas, ToUserJid) ->
-    #jid{luser = LUser, lserver = LServer, lresource = _LResource} = ToUserJid,
+dispatch(From,
+         #pushoff_registration{bare_jid = UserBare, token = Token, timestamp = Timestamp},
+         Stanza,
+         #pushoff_backend{worker = Worker}) ->
+    Payload = stanza_to_payload(From, Stanza),
 
-    case make_payload(Stanzas) of
-        none ->
-            throw(wat);
-
-        {Payload, _StanzasToStore} ->
-            do_dispatch({LUser, LServer}, Payload)
-    end.
-
-%-------------------------------------------------------------------------
-
--spec(do_dispatch(UserBare :: bare_jid(),
-                  Payload :: payload()) -> dispatched | not_subscribed).
-
-do_dispatch(UserBare = {LUser, LServer}, Payload) ->
-    SelectedReg = mnesia:read({pushoff_registration, {LUser, LServer}}),
-    case SelectedReg of
-        [] -> not_subscribed;
-       
-        [#pushoff_registration{bare_jid = _StoredUserBare,
-                               token = Token,
-                               backend_id = BackendId,
-                               timestamp = Timestamp}] ->
-            DisableArgs = {UserBare, Timestamp},
-            [#pushoff_backend{worker = Worker}] = mnesia:read({pushoff_backend, BackendId}),
-
-            gen_server:cast(Worker, {dispatch, UserBare, Payload, Token, DisableArgs})
-    end.
+    DisableArgs = {UserBare, Timestamp},
+    gen_server:cast(Worker, {dispatch, UserBare, Payload, Token, DisableArgs}),
+    ok.
 
 %-------------------------------------------------------------------------
 
 -spec(on_remove_user (User :: binary(), Server :: binary()) -> ok).
 
-on_remove_user(_User, _Server) ->
-    % TODO: unregister
-    ok.
+on_remove_user(User, Server) ->
+    unregister_client({User, Server}, undefined).
 
 %-------------------------------------------------------------------------
 
--spec(check_secret
-(
-    Secret :: binary(),
-    Opts :: [any()])
-    -> boolean()
-).
-
-check_secret(Secret, PubOpts) ->
-    case proplists:get_value(<<"secret">>, PubOpts) of
-        [Secret] -> true;
-        _ -> false
-    end.
-
-%-------------------------------------------------------------------------
-
--spec(add_backends
-(
-    Host :: binary())
-    -> ok | error
-).
+-spec(add_backends(Host :: binary()) -> ok | error).
 
 add_backends(Host) ->
     CertFile =
@@ -339,12 +301,7 @@ add_backends(Host) ->
 
 %-------------------------------------------------------------------------
 
--spec(start_worker
-(
-    Backend :: pushoff_backend(),
-    AuthData :: auth_data())
-    -> ok
-).
+-spec(start_worker(Backend :: pushoff_backend(), AuthData :: auth_data()) -> ok).
 
 start_worker(#pushoff_backend{worker = Worker, type = Type},
              #auth_data{auth_key = AuthKey,
@@ -363,14 +320,8 @@ start_worker(#pushoff_backend{worker = Worker, type = Type},
 
 %-------------------------------------------------------------------------
 
--spec(process_adhoc_command
-(
-    Acc :: any(),
-    From :: jid(),
-    To :: jid(),
-    Request :: adhoc_request())
-    -> any()
-).
+-spec(process_adhoc_command(Acc :: any(), From :: jid(),
+                            To :: jid(), Request :: adhoc_request()) -> any()).
 
 process_adhoc_command(Acc, From, #jid{lserver = LServer},
                       #adhoc_request{node = Command,
@@ -480,13 +431,7 @@ process_adhoc_command(Acc, _From, _To, _Request) ->
 % gen_mod callbacks
 %-------------------------------------------------------------------------
 
--spec(start
-(
-    Host :: binary(),
-    Opts :: [any()])
-    -> any()
-).
-
+-spec(start(Host :: binary(), Opts :: [any()]) -> any()).
 
 -define(RECORD(X), {X, record_info(fields, X)}).
 
@@ -515,11 +460,7 @@ start(Host, _Opts) ->
 
 %-------------------------------------------------------------------------
 
--spec(stop
-(
-    Host :: binary())
-    -> any()
-).
+-spec(stop(Host :: binary()) -> any()).
 
 stop(Host) ->
     ejabberd_hooks:delete(remove_user, Host, ?MODULE, on_remove_user, 50),
@@ -586,12 +527,9 @@ get_backend_opts(RawOptsList) ->
 % mod_pushoff utility functions
 %-------------------------------------------------------------------------
 
--spec(parse_backends
-(
-    BackendOpts :: [any()],
-    DefaultCertFile :: binary())
-    -> invalid | [{pushoff_backend(), auth_data()}]
-).
+-spec(parse_backends(BackendOpts :: [any()],
+                     DefaultCertFile :: binary()) -> invalid |
+                                                     [{pushoff_backend(), auth_data()}]).
 
 parse_backends(RawBackendOptsList, DefaultCertFile) ->
     BackendOptsList = get_backend_opts(RawBackendOptsList),
@@ -631,80 +569,27 @@ parse_backends(RawBackendOptsList, DefaultCertFile) ->
 
 %-------------------------------------------------------------------------
 
--spec(make_payload(UnackedStanzas :: [{erlang:timestamp(), xmlelement()}])
-      -> none | {payload(), [{erlang:timestamp(), xmlelement()}]}).
+-spec(stanza_to_payload(jid(), xmlelement()) -> payload()).
 
-make_payload([]) -> none;
-make_payload(UnackedStanzas) ->
-    StoredPayload = [],
-    UpdatePayload = fun(NewValues, OldPayload) ->
-                            lists:foldl(
-                              fun
-                                  ({_Key, undefined}, Acc) -> Acc;
-                                  ({Key, Value}, Acc) -> lists:keystore(Key, 1, Acc, {Key, Value})
-                              end,
-                              OldPayload,
-                              NewValues)
-                    end,
-    MakeNewValues =
-    fun(Stanza, OldPayload) ->
-        FromS = proplists:get_value(<<"from">>, Stanza#xmlel.attrs),
-        case Stanza of
-            #xmlel{name = <<"message">>, children = Children} ->
-                BodyPred =
-                fun (#xmlel{name = <<"body">>}) -> true;
-                    (_) -> false
-                end,
-                NewBody = case lists:filter(BodyPred, Children) of
-                    [] -> undefined;
-                    [#xmlel{children = [{xmlcdata, CData}]}|_] -> CData
-                end,
-                NewMsgCount = 
-                case proplists:get_value('message-count', OldPayload, 0) of
-                    ?MAX_INT -> 0;
-                    C when is_integer(C) -> C + 1
-                end,
-                {push_and_store,
-                 [{'last-message-body', NewBody},
-                  {'last-message-sender', FromS},
-                  {'message-count', NewMsgCount}]};
+stanza_to_payload(#jid{luser = FromU, lserver = FromS},
+                  #xmlel{name = <<"message">>, children = Children}) ->
+    From = iolist_to_binary([FromU, <<"@">> ,FromS]),
+    BodyPred =
+        fun (#xmlel{name = <<"body">>}) -> true;
+            (_) -> false
+        end,
+    Body = case lists:filter(BodyPred, Children) of
+               [] -> <<"">>;
+               [#xmlel{children = [{xmlcdata, CData}]}|_] -> CData
+           end,
+    % Truncate messages as you can't fit too much data into one push
+    Body1 = case size(Body) of
+                N when N >= 1024 -> binary_part(Body, 1024);
+                _ -> Body
+            end,
+    [{body, Body1}, {from, From}];
 
-            #xmlel{name = <<"presence">>, attrs = Attrs} ->
-                case proplists:get_value(<<"type">>, Attrs) of
-                    <<"subscribe">> ->
-                        OldSubscrCount =
-                        proplists:get_value('pending-subscriptions', OldPayload, 0),
-                        NewSubscrCount =
-                        case OldSubscrCount of
-                            ?MAX_INT -> 0;
-                            C when is_integer(C) -> C + 1
-                        end,
-                        {push,
-                         [{'pending-subscription-count', NewSubscrCount},
-                          {'last-subscription-sender', FromS}]};
-
-                    _ ->
-                        {push, []}
-                end;
-
-            _ -> {push, []}
-        end
-    end,
-    {NewPayload, StanzasToStore} =
-    lists:foldl(
-        fun({Timestamp, Stanza}, {PayloadAcc, StanzasAcc}) ->
-            case MakeNewValues(Stanza, PayloadAcc) of
-                {push, NewValues} -> 
-                    {UpdatePayload(NewValues, PayloadAcc), StanzasAcc};
-
-                {push_and_store, NewValues} ->
-                    {UpdatePayload(NewValues, PayloadAcc),
-                     [{Timestamp, Stanza}|StanzasAcc]}
-            end
-        end,                                              
-        {StoredPayload, []},
-        UnackedStanzas),
-    {NewPayload, StanzasToStore}.
+stanza_to_payload(_, _) -> {push, []}.
 
 %-------------------------------------------------------------------------
 % general utility functions
@@ -731,23 +616,16 @@ vvaluel(Val) ->
 
 %-------------------------------------------------------------------------
 
--spec(get_xdata_value
-(
-    FieldName :: binary(),
-    Fields :: [{binary(), [binary()]}])
-    -> error | binary()
-).
+-spec(get_xdata_value(FieldName :: binary(),
+                      Fields :: [{binary(), [binary()]}]) -> error |
+                                                             binary()).
 
 get_xdata_value(FieldName, Fields) ->
     get_xdata_value(FieldName, Fields, undefined).
 
--spec(get_xdata_value
-(
-    FieldName :: binary(),
-    Fields :: [{binary(), [binary()]}],
-    DefaultValue :: any())
-    -> any()
-).
+-spec(get_xdata_value(FieldName :: binary(),
+                      Fields :: [{binary(), [binary()]}],
+                      DefaultValue :: any()) -> any()).
 
 get_xdata_value(FieldName, Fields, DefaultValue) ->
     case proplists:get_value(FieldName, Fields, [DefaultValue]) of
@@ -755,41 +633,32 @@ get_xdata_value(FieldName, Fields, DefaultValue) ->
         _ -> error
     end.
 
--spec(get_xdata_values
-(
-    FieldName :: binary(),
-    Fields :: [{binary(), [binary()]}])
-    -> [binary()] 
-).
+-spec(get_xdata_values(FieldName :: binary(),
+                       Fields :: [{binary(), [binary()]}]) -> [binary()]).
 
 get_xdata_values(FieldName, Fields) ->
     get_xdata_values(FieldName, Fields, []).
 
--spec(get_xdata_values
-(
-    FieldName :: binary(),
-    Fields :: [{binary(), [binary()]}],
-    DefaultValue :: any())
-    -> any()
-).
+-spec(get_xdata_values(FieldName :: binary(),
+                       Fields :: [{binary(), [binary()]}],
+                       DefaultValue :: any())
+      -> any()).
 
 get_xdata_values(FieldName, Fields, DefaultValue) ->
     proplists:get_value(FieldName, Fields, DefaultValue).
     
 %-------------------------------------------------------------------------
 
--spec(parse_form
-(
-    [false | xmlelement()],
-    FormType :: binary(),
-    RequiredFields :: [{multi, binary()} | {single, binary()} |
-                       {{multi, binary()}, fun((binary()) -> any())} |
-                       {{single, binary()}, fun((binary()) -> any())}],
-    OptionalFields :: [{multi, binary()} | {single, binary()} |
-                       {{multi, binary()}, fun((binary()) -> any())} |
-                       {{single, binary()}, fun((binary()) -> any())}])
-    -> not_found | error | {result, [any()]} 
-).
+-spec(parse_form(
+        [false | xmlelement()],
+        FormType :: binary(),
+        RequiredFields :: [{multi, binary()} | {single, binary()} |
+                           {{multi, binary()}, fun((binary()) -> any())} |
+                           {{single, binary()}, fun((binary()) -> any())}],
+        OptionalFields :: [{multi, binary()} | {single, binary()} |
+                           {{multi, binary()}, fun((binary()) -> any())} |
+                           {{single, binary()}, fun((binary()) -> any())}])
+    -> not_found | error | {result, [any()]}).
 
 parse_form([], _FormType, _RequiredFields, _OptionalFields) ->
     not_found;
@@ -857,28 +726,12 @@ parse_form([XDataForm|T], FormType, RequiredFields, OptionalFields) ->
 
 %-------------------------------------------------------------------------
 
--spec(make_worker_name
-(
-    RegisterHost :: binary(),
-    Type :: atom())
-    -> atom()
-).
+-spec(make_worker_name(RegisterHost :: binary(), Type :: atom()) -> atom()).
 
 make_worker_name(RegisterHost, Type) ->
     gen_mod:get_module_proc(RegisterHost, Type).
 
 %-------------------------------------------------------------------------
-
--spec(ljid_to_jid
-(
-    ljid())
-    -> jid()
-).
-
-ljid_to_jid({LUser, LServer, LResource}) ->
-    #jid{user = LUser, server = LServer, resource = LResource,
-         luser = LUser, lserver = LServer, lresource = LResource}.
-
 
 health() ->
     Hosts = ejabberd_config:get_myhosts(),
