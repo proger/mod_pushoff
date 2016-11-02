@@ -27,7 +27,7 @@
 -compile(export_all).
 -export([start/2, stop/1, depends/2,
          mod_opt_type/1,
-         get_backend_opts/1,
+         parse_backends/1,
          on_offline_message/3,
          on_remove_user/2,
          process_adhoc_command/4,
@@ -84,49 +84,36 @@
 
 %-------------------------------------------------------------------------
 
--record(auth_data,
-        {certfile = <<"">> :: binary(),
+-type backend_id() :: {binary(), backend_type()}.
+
+-record(backend_config,
+        {reghost :: jid(),
+         type :: backend_type(),
+         certfile = <<"">> :: binary(),
          gateway = <<"">> :: binary()}).
 
 %% mnesia table
 -record(pushoff_registration, {bare_jid :: bare_jid(),
                                token :: binary(),
-                               backend_id :: integer(),
+                               backend_id :: backend_id(),
                                timestamp = now() :: erlang:timestamp()}).
 
-%% mnesia table
--record(pushoff_backend,
-        {id :: integer(),
-         register_host :: binary(),
-         type :: backend_type(),
-         app_name :: binary(),
-         cluster_nodes = [] :: [atom()],
-         worker :: binary()}).
-
--type auth_data() :: #auth_data{}.
+-type backend_config() :: #backend_config{}.
 -type backend_type() :: apns.
 -type bare_jid() :: {binary(), binary()}.
 -type payload_value() :: binary() | integer().
 -type payload() :: [{atom() | binary(), payload_value()}].
--type pushoff_backend() :: #pushoff_backend{}.
 -type pushoff_registration() :: #pushoff_registration{}.
 
 %-------------------------------------------------------------------------
 
--spec(register_client(User :: jid(), RegisterHost :: binary(),
-                      Type :: backend_type(), Token :: binary()) -> {registered, ok}).
+
+-spec(register_client(jid(), backend_id(), binary()) -> {registered, ok}).
 
 register_client(#jid{luser = LUser,
                      lserver = LServer,
-                     lresource = _LResource}, RegisterHost, Type, Token) ->
+                     lresource = _LResource}, BackendId, ApnsToken) ->
     F = fun() ->
-        MatchHeadBackend =
-        #pushoff_backend{register_host = RegisterHost, type = Type, _='_'},
-        MatchingBackends =
-        mnesia:select(pushoff_backend, [{MatchHeadBackend, [], ['$_']}]),
-        case MatchingBackends of
-            [#pushoff_backend{id = BackendId}|_] ->
-                ?DEBUG("+++++ register_client: found backend", []),
                 MatchHeadReg =
                     #pushoff_registration{bare_jid = {LUser, LServer}, _='_'},
                 ExistingReg =
@@ -135,22 +122,17 @@ register_client(#jid{luser = LUser,
                     case ExistingReg of
                         [] ->
                             #pushoff_registration{bare_jid = {LUser, LServer},
-                                                  token = Token,
+                                                  token = ApnsToken,
                                                   backend_id = BackendId};
 
-                    [OldReg] ->
-                        OldReg#pushoff_registration{token = Token,
-                                                    backend_id = BackendId,
-                                                    timestamp = now()}
-                end,
+                        [OldReg] ->
+                            OldReg#pushoff_registration{token = ApnsToken,
+                                                        backend_id = BackendId,
+                                                        timestamp = now()}
+                    end,
                 mnesia:write(Registration),
-                ok;
-            
-            _ ->
-                ?DEBUG("+++++ register_client: found no backend", []),
-                error
-        end
-    end,
+                ok
+           end,
     case mnesia:transaction(F) of
         {aborted, _} -> {error, ?ERR_INTERNAL_SERVER_ERROR};
         {atomic, error} -> {error, ?ERR_ITEM_NOT_FOUND};
@@ -216,24 +198,13 @@ list_registrations(#jid{luser = LUser, lserver = LServer}) ->
 
 on_offline_message(From, To = #jid{luser = LUser, lserver = LServer}, Stanza) ->
     Transaction =
-        fun() ->
-                Regs = mnesia:read({pushoff_registration, {LUser, LServer}}),
-                Backends = case Regs of
-                               [#pushoff_registration{backend_id = BackendId}] ->
-                                   mnesia:read({pushoff_backend, BackendId});
-                               _ -> []
-                           end,
-                {Regs, Backends}
-        end,
+        fun() -> mnesia:read({pushoff_registration, {LUser, LServer}}) end,
     case mnesia:transaction(Transaction) of
-        {atomic, {[], _}} ->
+        {atomic, []} ->
             ?DEBUG("+++++ mod_pushoff dispatch: ~p is not_subscribed", [To]),
             ok;
-        {atomic, {Regs, []}} ->
-            ?DEBUG("+++++ mod_pushoff dispatch: no backends found for ~p", [Regs]),
-            ok;
-        {atomic, {[Reg], [Backend]}} ->
-            dispatch(From, Reg, Stanza, Backend),
+        {atomic, [Reg]} ->
+            dispatch(From, Reg, Stanza),
             ok;
         {aborted, Error} ->
             ?DEBUG("+++++ error in on_offline_message: ~p", [Error]),
@@ -242,17 +213,15 @@ on_offline_message(From, To = #jid{luser = LUser, lserver = LServer}, Stanza) ->
 
 %-------------------------------------------------------------------------
 
--spec(dispatch(From :: jid(), To :: pushoff_registration(), Stanza :: xmlelement(),
-               Backend :: pushoff_backend()) -> ok).
+-spec(dispatch(From :: jid(), To :: pushoff_registration(), Stanza :: xmlelement()) -> ok).
 
 dispatch(From,
-         #pushoff_registration{bare_jid = UserBare, token = Token, timestamp = Timestamp},
-         Stanza,
-         #pushoff_backend{worker = Worker}) ->
+         #pushoff_registration{bare_jid = UserBare, token = Token, timestamp = Timestamp,
+                               backend_id = BackendId},
+         Stanza) ->
     Payload = stanza_to_payload(From, Stanza),
-
     DisableArgs = {UserBare, Timestamp},
-    gen_server:cast(Worker, {dispatch, UserBare, Payload, Token, DisableArgs}),
+    gen_server:cast(backend_worker(BackendId), {dispatch, UserBare, Payload, Token, DisableArgs}),
     ok.
 
 %-------------------------------------------------------------------------
@@ -261,55 +230,6 @@ dispatch(From,
 
 on_remove_user(User, Server) ->
     unregister_client({User, Server}, undefined).
-
-%-------------------------------------------------------------------------
-
--spec(add_backends(Host :: binary()) -> ok | error).
-
-add_backends(Host) ->
-    BackendOpts =
-    gen_mod:get_module_opt(Host, ?MODULE, backends,
-                           fun(O) when is_list(O) -> O end,
-                           []),
-    Backends = parse_backends(BackendOpts),
-    lists:foreach(
-        fun({Backend, AuthData}) ->
-            RegisterHost = Backend#pushoff_backend.register_host,
-            %ejabberd_router:register_route(RegisterHost),
-            ejabberd_hooks:add(adhoc_local_commands, RegisterHost, ?MODULE, process_adhoc_command, 75),
-            ?INFO_MSG("added adhoc command handler for app server ~p",
-                      [RegisterHost]),
-            NewBackend =
-            case mnesia:read({pushoff_backend, Backend#pushoff_backend.id}) of
-                [] -> Backend;
-                [#pushoff_backend{cluster_nodes = Nodes}] ->
-                    NewNodes =
-                    lists:merge(Nodes, Backend#pushoff_backend.cluster_nodes),
-                    Backend#pushoff_backend{cluster_nodes = NewNodes}
-            end,
-            mnesia:write(NewBackend),
-            start_worker(Backend, AuthData)
-        end,
-      Backends),
-    Backends.
-    
-
-%-------------------------------------------------------------------------
-
--spec(start_worker(Backend :: pushoff_backend(), AuthData :: auth_data()) -> ok).
-
-start_worker(#pushoff_backend{worker = Worker, type = Type},
-             #auth_data{certfile = CertFile, gateway = Gateway}) ->
-    Module =
-    proplists:get_value(Type,
-                        [{apns, ?MODULE_APNS}]),
-    BackendSpec =
-    {Worker,
-     {gen_server, start_link,
-      [{local, Worker}, Module,
-       [CertFile, Gateway], []]},
-     permanent, 1000, worker, [?MODULE]},
-    supervisor:start_child(ejabberd_sup, BackendSpec).
 
 %-------------------------------------------------------------------------
 
@@ -334,7 +254,7 @@ process_adhoc_command(Acc, From, #jid{lserver = LServer},
                                 error;
 
                             Token ->
-                                register_client(From, LServer, apns, Token)
+                                register_client(From, {LServer, apns}, Token)
                         end
                 end
             end;
@@ -346,7 +266,7 @@ process_adhoc_command(Acc, From, #jid{lserver = LServer},
     Result = case Action of
         unknown -> unknown;
         _ ->
-            Host = remove_subdomain(LServer),
+            Host = remove_subdomain(LServer), % why?
             Access =
             gen_mod:get_module_opt(Host,
                                    ?MODULE,
@@ -441,15 +361,15 @@ mnesia_set_from_record({Name, Fields}) ->
 
 start(Host, _Opts) ->
     mnesia_set_from_record(?RECORD(pushoff_registration)),
-    mnesia_set_from_record(?RECORD(pushoff_backend)),
 
     ejabberd_hooks:add(remove_user, Host, ?MODULE, on_remove_user, 50),
     ejabberd_hooks:add(offline_message_hook, Host, ?MODULE, on_offline_message, ?OFFLINE_HOOK_PRIO),
-    F = fun() -> add_backends(Host) end,
-    case mnesia:transaction(F) of
-        {atomic, Bs} -> ?DEBUG("++++++++ Added push backends: ~p", [Bs]);
-        {aborted, Error} -> ?DEBUG("+++++++++ Error adding push backends: ~p", [Error])
-    end.
+    ejabberd_hooks:add(adhoc_local_commands, Host, ?MODULE, process_adhoc_command, 75),
+
+    Bs = backend_configs(Host),
+    [start_worker(B) || B <- Bs],
+    ?DEBUG("++++++++ Added push backends: ~p", [Bs]),
+    ok.
 
 %-------------------------------------------------------------------------
 
@@ -458,91 +378,69 @@ start(Host, _Opts) ->
 stop(Host) ->
     ejabberd_hooks:delete(remove_user, Host, ?MODULE, on_remove_user, 50),
     ejabberd_hooks:delete(offline_message_hook, Host, ?MODULE, on_offline_message, ?OFFLINE_HOOK_PRIO),
-    F = fun() ->
-        mnesia:foldl(
-            fun(Backend) ->
-                RegHost = Backend#pushoff_backend.register_host,
-                %ejabberd_router:unregister_route(RegHost),
-                ejabberd_hooks:delete(adhoc_local_commands, RegHost, ?MODULE, process_adhoc_command, 75),
-                {Local, Remote} =
-                lists:partition(fun(N) -> N =:= node() end,
-                                Backend#pushoff_backend.cluster_nodes),
-                case Local of
-                    [] -> ok;
-                    _ ->
-                        case Remote of
-                            [] ->
-                                mnesia:delete({pushoff_backend, Backend#pushoff_backend.id});
-                            _ ->
-                                mnesia:write(
-                                    Backend#pushoff_backend{cluster_nodes = Remote})
-                        end,
-                        supervisor:terminate_child(ejabberd_sup,
-                                                   Backend#pushoff_backend.worker),
-                        supervisor:delete_child(ejabberd_sup,
-                                                Backend#pushoff_backend.worker)
-                end
-            end,
-            ok,
-            pushoff_backends,
-            write)
-       end,
-    mnesia:transaction(F).
+    ejabberd_hooks:delete(adhoc_local_commands, Host, ?MODULE, process_adhoc_command, 75),
+
+    [begin
+         Worker = backend_worker(B),
+         supervisor:terminate_child(ejabberd_sup, Worker),
+         supervisor:delete_child(ejabberd_sup, Worker)
+     end || B <- backend_configs(Host)],
+    ok.
 
 depends(_, _) ->
     [{mod_offline, hard}].
 
 %-------------------------------------------------------------------------
 
-mod_opt_type(backends) -> fun ?MODULE:get_backend_opts/1;
+mod_opt_type(backends) -> fun ?MODULE:parse_backends/1;
 mod_opt_type(_) -> [backends].
 
-get_backend_opts(RawOptsList) ->
-    lists:map(
-        fun(Opts) ->
-            RegHostJid =
-            jlib:string_to_jid(proplists:get_value(register_host, Opts)),
-            RawType = proplists:get_value(type, Opts),
-            Type =
-            case lists:member(RawType, [apns]) of
-                true -> RawType
-            end,
-            AppName = proplists:get_value(app_name, Opts, <<"any">>),
-            CertFile = proplists:get_value(certfile, Opts),
-            Gateway = proplists:get_value(gateway, Opts),
-            {RegHostJid, Type, AppName, CertFile, Gateway}
+parse_backends(Plists) ->
+    [parse_backend(Plist) || Plist <- Plists].
+
+parse_backend(Opts) ->
+    RegHostJid = jlib:string_to_jid(proplists:get_value(register_host, Opts)),
+    RawType = proplists:get_value(type, Opts),
+    Type =
+        case lists:member(RawType, [apns]) of
+            true -> RawType
         end,
-        RawOptsList).
+    CertFile = proplists:get_value(certfile, Opts),
+    Gateway = proplists:get_value(gateway, Opts),
 
--spec(parse_backends(BackendOpts :: [any()]) -> invalid |
-                                                [{pushoff_backend(), auth_data()}]).
+    #backend_config{reghost = RegHostJid,
+             type = Type,
+             certfile = CertFile,
+             gateway = Gateway}.
 
-parse_backends(RawBackendOptsList) ->
-    BackendOptsList = get_backend_opts(RawBackendOptsList),
-    MakeBackend =
-    fun({RegHostJid, Type, AppName, ChosenCertFile, Gateway}, Acc) ->
-        case is_binary(ChosenCertFile) and (ChosenCertFile =/= <<"">>) of
-            true ->
-                BackendId = erlang:phash2({RegHostJid#jid.lserver, Type}),
-                AuthData = #auth_data{certfile = ChosenCertFile,
-                                      gateway = Gateway},
-                Worker = make_worker_name(RegHostJid#jid.lserver, Type),
-                Backend =
-                #pushoff_backend{
-                   id = BackendId,
-                   register_host = RegHostJid#jid.lserver,
-                   type = Type,
-                   app_name = AppName,
-                   cluster_nodes = [node()],
-                   worker = Worker},
-                [{Backend, AuthData}|Acc];
+-spec(backend_worker(backend_id() | backend_config()) -> atom()).
 
-            false ->
-                ?ERROR_MSG("option certfile not defined for mod_pushoff backend", []),
-                Acc
-        end
-    end,
-    lists:foldl(MakeBackend, [], BackendOptsList).
+backend_worker(#backend_config{reghost = RegHostJid, type = Type}) ->
+    backend_worker({RegHostJid#jid.lserver, Type});
+
+backend_worker({RegHostServer, Type}) ->
+    gen_mod:get_module_proc(RegHostServer, Type).
+
+-spec(backend_configs(Host :: binary()) -> [backend_config()]).
+
+backend_configs(Host) ->
+    BackendOpts = gen_mod:get_module_opt(Host, ?MODULE, backends,
+                                         fun(O) when is_list(O) -> O end, []),
+    parse_backends(BackendOpts).
+
+%-------------------------------------------------------------------------
+
+-spec(start_worker(Backend :: backend_config()) -> ok).
+
+start_worker(B = #backend_config{type = Type, certfile = CertFile, gateway = Gateway}) ->
+    Module = proplists:get_value(Type, [{apns, ?MODULE_APNS}]),
+    Worker = backend_worker(B),
+    BackendSpec = {Worker,
+                   {gen_server, start_link,
+                    [{local, Worker}, Module,
+                     [CertFile, Gateway], []]},
+                   permanent, 1000, worker, [?MODULE]},
+    supervisor:start_child(ejabberd_sup, BackendSpec).
 
 %-------------------------------------------------------------------------
 
@@ -700,13 +598,6 @@ parse_form([XDataForm|T], FormType, RequiredFields, OptionalFields) ->
                 _ -> parse_form(T, FormType, RequiredFields, OptionalFields)
             end
     end.
-
-%-------------------------------------------------------------------------
-
--spec(make_worker_name(RegisterHost :: binary(), Type :: atom()) -> atom()).
-
-make_worker_name(RegisterHost, Type) ->
-    gen_mod:get_module_proc(RegisterHost, Type).
 
 %-------------------------------------------------------------------------
 

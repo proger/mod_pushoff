@@ -52,7 +52,7 @@
                     H =/= md5]).
 
 -record(state,
-        {certfile :: binary(),
+        {certfile :: string(),
          out_socket :: ssl:socket(),
          pending_list :: [{pos_integer(), any()}],
          send_list :: [any()],
@@ -69,14 +69,14 @@ init([CertFile, Gateway]) ->
     inets:start(),
     crypto:start(),
     ssl:start(),
-    {ok, #state{certfile = CertFile,
+    {ok, #state{certfile = force_string(CertFile),
                 pending_list = [],
                 send_list = [],
                 retry_list = [],
                 pending_timer = make_ref(),
                 retry_timer = make_ref(),
                 message_id = 0,
-                gateway = Gateway}}.
+                gateway = force_string(Gateway)}}.
 
 handle_info({ssl, _Socket, Data},
             #state{pending_list = PendingList,
@@ -340,6 +340,8 @@ enqueue_some(PendingList, SendList, MessageId) ->
     {NewMessageId, Result} = enumerate_from(MessageId, NewPendingElements),
     {PendingList ++ Result, NewSendList, NewMessageId}.
 
+force_string(V) when is_binary(V) -> binary_to_list(V);
+force_string(V) -> V.
 
 test() ->
     UserBare = {<<"jane">>,<<"localhost">>},
