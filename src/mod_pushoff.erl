@@ -1,6 +1,6 @@
-%%%----------------------------------------------------------------------
 %%%
 %%% Copyright (C) 2015  Christian Ulrich
+%%% Copyright (C) 2016  Vlad Ki
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -16,11 +16,11 @@
 %%% with this program; if not, write to the Free Software Foundation, Inc.,
 %%% 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 %%%
-%%%----------------------------------------------------------------------
 
 -module(mod_pushoff).
 
 -author('christian@rechenwerk.net').
+-author('proger@wilab.org.ua').
 
 -behaviour(gen_mod).
 
@@ -40,11 +40,10 @@
 
 -define(MODULE_APNS, mod_pushoff_apns).
 -define(OFFLINE_HOOK_PRIO, 1). % must fire before mod_offline (which has 50)
--define(MAX_INT, 4294967295).
 
-%-------------------------------------------------------------------------
+%
 % xdata-form macros
-%-------------------------------------------------------------------------
+%
 
 -define(VVALUE(Val),
 (
@@ -82,7 +81,9 @@
            children = Fields}
 )).
 
-%-------------------------------------------------------------------------
+%
+% types
+%
 
 -type bare_jid() :: {binary(), binary()}.
 -type backend_type() :: apns.
@@ -105,8 +106,7 @@
 -type payload_value() :: binary() | integer().
 -type payload() :: [{atom() | binary(), payload_value()}].
 
-%-------------------------------------------------------------------------
-
+%%
 
 -spec(register_client(jid(), backend_id(), binary()) -> {registered, ok}).
 
@@ -140,7 +140,11 @@ register_client(#jid{luser = LUser,
         {atomic, Result} -> {registered, Result}
     end. 
 
-%-------------------------------------------------------------------------
+
+-spec(unregister_client({bare_jid(), erlang:timestamp()}) -> error |
+                                                             {error, xmlelement()} |
+                                                             {unregistered, ok} |
+                                                             {unregistered, [binary()]}).
 
 unregister_client({U, T}) -> unregister_client(U, T).
 
@@ -177,8 +181,6 @@ unregister_client({LUser, LServer}, Timestamp) ->
         {atomic, error} -> error;
         {atomic, Result} -> {unregistered, Result}
     end.
-                                         
-%-------------------------------------------------------------------------
 
 -spec(list_registrations(jid()) -> {error, xmlelement()} |
                                    {registrations, [pushoff_registration()]}).
@@ -192,8 +194,6 @@ list_registrations(#jid{luser = LUser, lserver = LServer}) ->
         {aborted, _} -> {error, ?ERR_INTERNAL_SERVER_ERROR};
         {atomic, RegList} -> {registrations, RegList}
     end.
-
-%-------------------------------------------------------------------------
 
 -spec(on_offline_message(From :: jid(), To :: jid(), Stanza :: xmlelement()) -> ok).
 
@@ -212,27 +212,25 @@ on_offline_message(From, To = #jid{luser = LUser, lserver = LServer}, Stanza) ->
             ok
     end.
 
-%-------------------------------------------------------------------------
-
 -spec(dispatch(From :: jid(), To :: pushoff_registration(), Stanza :: xmlelement()) -> ok).
 
 dispatch(From,
          #pushoff_registration{bare_jid = UserBare, token = Token, timestamp = Timestamp,
                                backend_id = BackendId},
          Stanza) ->
-    Payload = stanza_to_payload(From, Stanza),
-    DisableArgs = {UserBare, Timestamp},
-    gen_server:cast(backend_worker(BackendId), {dispatch, UserBare, Payload, Token, DisableArgs}),
-    ok.
-
-%-------------------------------------------------------------------------
+    case stanza_to_payload(From, Stanza) of
+        ignore -> ok;
+        Payload ->
+            DisableArgs = {UserBare, Timestamp},
+            gen_server:cast(backend_worker(BackendId),
+                            {dispatch, UserBare, Payload, Token, DisableArgs}),
+            ok
+    end.
 
 -spec(on_remove_user (User :: binary(), Server :: binary()) -> ok).
 
 on_remove_user(User, Server) ->
     unregister_client({User, Server}, undefined).
-
-%-------------------------------------------------------------------------
 
 -spec(process_adhoc_command(Acc :: any(), From :: jid(),
                             To :: jid(), Request :: adhoc_request()) -> any()).
@@ -341,12 +339,6 @@ process_adhoc_command(Acc, From, #jid{lserver = LServer},
 process_adhoc_command(Acc, _From, _To, _Request) ->
     Acc.
      
-%-------------------------------------------------------------------------
-% gen_mod callbacks
-%-------------------------------------------------------------------------
-
--spec(start(Host :: binary(), Opts :: [any()]) -> any()).
-
 -define(RECORD(X), {X, record_info(fields, X)}).
 
 mnesia_set_from_record({Name, Fields}) ->
@@ -360,6 +352,8 @@ mnesia_set_from_record({Name, Fields}) ->
         _ -> mnesia:transform_table(Name, ignore, Fields)
     end.
 
+-spec(start(Host :: binary(), Opts :: [any()]) -> any()).
+
 start(Host, _Opts) ->
     mnesia_set_from_record(?RECORD(pushoff_registration)),
 
@@ -371,8 +365,6 @@ start(Host, _Opts) ->
     Results = [start_worker(Host, B) || B <- Bs],
     ?DEBUG("++++++++ Added push backends: ~p resulted in ~p", [Bs, Results]),
     ok.
-
-%-------------------------------------------------------------------------
 
 -spec(stop(Host :: binary()) -> any()).
 
@@ -390,8 +382,6 @@ stop(Host) ->
 
 depends(_, _) ->
     [{mod_offline, hard}].
-
-%-------------------------------------------------------------------------
 
 mod_opt_type(backends) -> fun ?MODULE:parse_backends/1;
 mod_opt_type(_) -> [backends].
@@ -412,7 +402,9 @@ parse_backend(Opts) ->
                     certfile = CertFile,
                     gateway = Gateway}.
 
+
 -spec(backend_worker(backend_id()) -> atom()).
+
 backend_worker({Host, Type}) -> gen_mod:get_module_proc(Host, Type).
 
 backend_configs(Host) ->
@@ -420,7 +412,6 @@ backend_configs(Host) ->
                                          fun(O) when is_list(O) -> O end, []),
     parse_backends(BackendOpts).
 
-%-------------------------------------------------------------------------
 
 -spec(start_worker(Host :: binary(), Backend :: backend_config()) -> ok).
 
@@ -433,8 +424,6 @@ start_worker(Host, #backend_config{type = Type, certfile = CertFile, gateway = G
                      [CertFile, Gateway], []]},
                    permanent, 1000, worker, [?MODULE]},
     supervisor:start_child(ejabberd_sup, BackendSpec).
-
-%-------------------------------------------------------------------------
 
 -spec(stanza_to_payload(jid(), xmlelement()) -> payload()).
 
@@ -456,11 +445,7 @@ stanza_to_payload(#jid{luser = FromU, lserver = FromS},
             end,
     [{body, Body1}, {from, From}];
 
-stanza_to_payload(_, _) -> {push, []}.
-
-%-------------------------------------------------------------------------
-% general utility functions
-%-------------------------------------------------------------------------
+stanza_to_payload(_, _) -> ignore.
 
 -spec(remove_subdomain (Hostname :: binary()) -> binary()).
 
@@ -473,15 +458,11 @@ remove_subdomain(Hostname) ->
         _ -> Hostname
     end.
 
-%-------------------------------------------------------------------------
-
 vvaluel(Val) ->
     case Val of
         <<>> -> [];
         _ -> [?VVALUE(Val)]
     end.
-
-%-------------------------------------------------------------------------
 
 -spec(get_xdata_value(FieldName :: binary(),
                       Fields :: [{binary(), [binary()]}]) -> error |
@@ -514,8 +495,6 @@ get_xdata_values(FieldName, Fields) ->
 get_xdata_values(FieldName, Fields, DefaultValue) ->
     proplists:get_value(FieldName, Fields, DefaultValue).
     
-%-------------------------------------------------------------------------
-
 -spec(parse_form(
         [false | xmlelement()],
         FormType :: binary(),
@@ -591,12 +570,9 @@ parse_form([XDataForm|T], FormType, RequiredFields, OptionalFields) ->
             end
     end.
 
-%-------------------------------------------------------------------------
-
 health() ->
     Hosts = ejabberd_config:get_myhosts(),
     {[{ets:lookup(hooks, {offline_message_hook, H})} || H <- Hosts]}.
-
 
 %% Local Variables:
 %% eval: (setq-local flycheck-erlang-include-path (list "../../../../src/ejabberd/include/"))
