@@ -25,19 +25,39 @@ ejabberdctl module_install mod_pushoff
 
 ```bash
 ejabberdctl module_upgrade mod_pushoff
-# For some reason module_upgrade does not reload auxiliary erlang modules
-# and leaves mod_pushoff stopped.
-# Kick it manually (sub relevant hosts for <<"localhost">>):
-
-ejabberdctl debug
-> l(mod_pushoff_apns).
-> gen_mod:start_module(<<"localhost">>, mod_pushoff).
 ```
 
-## Example configuration
+For some reason `module_upgrade` does not reload auxiliary erlang modules and leaves mod_pushoff stopped.
+Kick it manually inside `ejabberdctl debug`:
+
+``` erlang
+% (sub relevant hosts for <<"localhost">>)
+l(mod_pushoff_apns).
+gen_mod:start_module(<<"localhost">>, mod_pushoff).
+```
+
+### Operation Notes
+
+``` erlang
+% Are hooks installed? Look for mod_pushoff:
+mod_pushoff:health().
+% What hosts to expect?
+ejabberd_config:get_myhosts().
+% What is the host configuration?
+ejabberd_config:get_option({modules, <<"localhost">>}, fun(F) -> F end).
+% Divert logs:
+lager:trace_file("/tmp/mod_pushoff.log", [{module, mod_pushoff}], debug).
+lager:trace_file("/tmp/mod_pushoff.log", [{module, mod_pushoff_apns}], debug).
+% Tracing (install recon first from https://github.com/ferd/recon):
+code:add_patha("/Users/vladki/src/recon/ebin"),
+recon_trace:calls({mod_push, on_offline_message, '_'}, 100).
+```
+
+## Configuration
 
 ```yaml
 modules:
+  # mod_offline is a hard dependency
   mod_offline: {}
   mod_pushoff:
     backends:
@@ -50,7 +70,7 @@ modules:
         #gateway: "gateway.sandbox.push.apple.com"
 ```
 
-## Usage
+## Client Applications
 
 Clients can register for push notifications by sending XEP-0004 adhoc requests.
 
