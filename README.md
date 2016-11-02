@@ -12,13 +12,12 @@ Currently supporting solely [Legacy APNS Binary Provider API](https://developer.
 ## Installation
 
 ```bash
+# Substitute ~ for the home directory of the user that runs ejabberd:
+cd ~/.ejabberd-modules/sources/
 git clone https://github.com/proger/mod_pushoff.git
-# Copy the source code folder to the module sources folder of your ejabberd,
-# (substitute ~ for the home directory of the user that runs ejabberd).
-sudo cp -R mod_pushoff ~/.ejabberd-modules/sources/
-# If done right ejabberdctl will list mod_pushoff as available:
+# ejabberdctl should now list mod_pushoff as available:
 ejabberdctl modules_available
-# Automatically compile and install mod_pushoff:
+# Compile and install mod_pushoff:
 ejabberdctl module_install mod_pushoff
 ```
 
