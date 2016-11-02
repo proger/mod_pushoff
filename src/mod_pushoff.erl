@@ -374,10 +374,10 @@ stop(Host) ->
     ejabberd_hooks:delete(adhoc_local_commands, Host, ?MODULE, process_adhoc_command, 75),
 
     [begin
-         Worker = backend_worker({Host, B}),
+         Worker = backend_worker({Host, Type}),
          supervisor:terminate_child(ejabberd_sup, Worker),
          supervisor:delete_child(ejabberd_sup, Worker)
-     end || B <- backend_configs(Host)],
+     end || #backend_config{type=Type} <- backend_configs(Host)],
     ok.
 
 depends(_, _) ->
