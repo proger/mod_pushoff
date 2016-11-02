@@ -84,11 +84,12 @@
 
 %-------------------------------------------------------------------------
 
+-type bare_jid() :: {binary(), binary()}.
+-type backend_type() :: apns.
 -type backend_id() :: {binary(), backend_type()}.
 
 -record(backend_config,
-        {reghost :: jid(),
-         type :: backend_type(),
+        {type :: backend_type(),
          certfile = <<"">> :: binary(),
          gateway = <<"">> :: binary()}).
 
@@ -98,12 +99,11 @@
                                backend_id :: backend_id(),
                                timestamp :: erlang:timestamp()}).
 
+-type pushoff_registration() :: #pushoff_registration{}.
+
 -type backend_config() :: #backend_config{}.
--type backend_type() :: apns.
--type bare_jid() :: {binary(), binary()}.
 -type payload_value() :: binary() | integer().
 -type payload() :: [{atom() | binary(), payload_value()}].
--type pushoff_registration() :: #pushoff_registration{}.
 
 %-------------------------------------------------------------------------
 
@@ -368,7 +368,7 @@ start(Host, _Opts) ->
     ejabberd_hooks:add(adhoc_local_commands, Host, ?MODULE, process_adhoc_command, 75),
 
     Bs = backend_configs(Host),
-    Results = [start_worker(B) || B <- Bs],
+    Results = [start_worker(Host, B) || B <- Bs],
     ?DEBUG("++++++++ Added push backends: ~p resulted in ~p", [Bs, Results]),
     ok.
 
@@ -382,7 +382,7 @@ stop(Host) ->
     ejabberd_hooks:delete(adhoc_local_commands, Host, ?MODULE, process_adhoc_command, 75),
 
     [begin
-         Worker = backend_worker(B),
+         Worker = backend_worker({Host, B}),
          supervisor:terminate_child(ejabberd_sup, Worker),
          supervisor:delete_child(ejabberd_sup, Worker)
      end || B <- backend_configs(Host)],
@@ -400,7 +400,6 @@ parse_backends(Plists) ->
     [parse_backend(Plist) || Plist <- Plists].
 
 parse_backend(Opts) ->
-    RegHostJid = jlib:string_to_jid(proplists:get_value(register_host, Opts)),
     RawType = proplists:get_value(type, Opts),
     Type =
         case lists:member(RawType, [apns]) of
@@ -409,20 +408,12 @@ parse_backend(Opts) ->
     CertFile = proplists:get_value(certfile, Opts),
     Gateway = proplists:get_value(gateway, Opts),
 
-    #backend_config{reghost = RegHostJid,
-             type = Type,
-             certfile = CertFile,
-             gateway = Gateway}.
+    #backend_config{type = Type,
+                    certfile = CertFile,
+                    gateway = Gateway}.
 
--spec(backend_worker(backend_id() | backend_config()) -> atom()).
-
-backend_worker(#backend_config{reghost = RegHostJid, type = Type}) ->
-    backend_worker({RegHostJid#jid.lserver, Type});
-
-backend_worker({RegHostServer, Type}) ->
-    gen_mod:get_module_proc(RegHostServer, Type).
-
--spec(backend_configs(Host :: binary()) -> [backend_config()]).
+-spec(backend_worker(backend_id()) -> atom()).
+backend_worker({Host, Type}) -> gen_mod:get_module_proc(Host, Type).
 
 backend_configs(Host) ->
     BackendOpts = gen_mod:get_module_opt(Host, ?MODULE, backends,
@@ -431,11 +422,11 @@ backend_configs(Host) ->
 
 %-------------------------------------------------------------------------
 
--spec(start_worker(Backend :: backend_config()) -> ok).
+-spec(start_worker(Host :: binary(), Backend :: backend_config()) -> ok).
 
-start_worker(B = #backend_config{type = Type, certfile = CertFile, gateway = Gateway}) ->
+start_worker(Host, #backend_config{type = Type, certfile = CertFile, gateway = Gateway}) ->
     Module = proplists:get_value(Type, [{apns, ?MODULE_APNS}]),
-    Worker = backend_worker(B),
+    Worker = backend_worker({Host, Type}),
     BackendSpec = {Worker,
                    {gen_server, start_link,
                     [{local, Worker}, Module,

@@ -31,7 +31,6 @@ modules:
     backends:
       -
         type: apns
-        register_host: "localhost"
         # make sure this pem file contains only one(!) certificate + key pair
         certfile: "/etc/ssl/private/apns_example_app.pem"
         # sandbox is for testing
@@ -49,7 +48,7 @@ These are the available adhoc commands:
 * `list-push-registrations`: request a list of all registrations of the requesting user
 * `unregister-push`: delete the user's registrations
 
-Example:
+Example (note, `to='localhost'` contain the your user's server name):
 ```xml
 <iq type='set' to='localhost' id='execute'>
   <command xmlns='http://jabber.org/protocol/commands'
