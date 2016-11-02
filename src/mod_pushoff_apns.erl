@@ -219,7 +219,7 @@ handle_info(send, #state{certfile = CertFile,
 
                         ok ->
                             ?DEBUG("sending to APNS successful: ~p", [NewPendingList]),
-                            Timestamp = erlang:now(),
+                            Timestamp = erlang:timestamp(),
                             NewPendingTimer =
                             erlang:send_after(?PENDING_INTERVAL, self(),
                                               {pending_timeout, Timestamp}),
@@ -313,7 +313,7 @@ pending_to_retry(PendingList, RetryList) ->
 
 restart_retry_timer(OldTimer) ->
     erlang:cancel_timer(OldTimer),
-    Timestamp = erlang:now(),
+    Timestamp = erlang:timestamp(),
     NewTimer = erlang:send_after(?RETRY_INTERVAL, self(), {retry, Timestamp}),
     {NewTimer, Timestamp}.
 
@@ -345,7 +345,7 @@ force_string(V) -> V.
 
 test() ->
     UserBare = {<<"jane">>,<<"localhost">>},
-    Timestamp = now(),
+    Timestamp = erlang:timestamp(),
     DisableArgs = {UserBare, Timestamp},
     Payload = [{body, <<"sup">>},
                {from, <<"john@localhost">>}],

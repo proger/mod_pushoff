@@ -96,7 +96,7 @@
 -record(pushoff_registration, {bare_jid :: bare_jid(),
                                token :: binary(),
                                backend_id :: backend_id(),
-                               timestamp = now() :: erlang:timestamp()}).
+                               timestamp :: erlang:timestamp()}).
 
 -type backend_config() :: #backend_config{}.
 -type backend_type() :: apns.
@@ -123,7 +123,8 @@ register_client(#jid{luser = LUser,
                         [] ->
                             #pushoff_registration{bare_jid = {LUser, LServer},
                                                   token = ApnsToken,
-                                                  backend_id = BackendId};
+                                                  backend_id = BackendId,
+                                                  timestamp = now()};
 
                         [OldReg] ->
                             OldReg#pushoff_registration{token = ApnsToken,
@@ -367,8 +368,8 @@ start(Host, _Opts) ->
     ejabberd_hooks:add(adhoc_local_commands, Host, ?MODULE, process_adhoc_command, 75),
 
     Bs = backend_configs(Host),
-    [start_worker(B) || B <- Bs],
-    ?DEBUG("++++++++ Added push backends: ~p", [Bs]),
+    Results = [start_worker(B) || B <- Bs],
+    ?DEBUG("++++++++ Added push backends: ~p resulted in ~p", [Bs, Results]),
     ok.
 
 %-------------------------------------------------------------------------
