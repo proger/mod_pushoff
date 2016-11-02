@@ -1,6 +1,6 @@
-%%%----------------------------------------------------------------------
 %%%
 %%% Copyright (C) 2015  Christian Ulrich
+%%% Copyright (C) 2016  Vlad Ki
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -16,13 +16,13 @@
 %%% with this program; if not, write to the Free Software Foundation, Inc.,
 %%% 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 %%%
-%%%----------------------------------------------------------------------
 
 %% This implements the "legacy" binary API
 
 -module(mod_pushoff_apns).
 
 -author('christian@rechenwerk.net').
+-author('proger@wilab.org.ua').
 
 -behaviour(gen_server).
 -compile(export_all).
@@ -304,8 +304,8 @@ get_socket(OldSocket, CertFile, Gateway) ->
        _ -> OldSocket
     end.
 
+%% XXX does this even typecheck?
 pending_to_retry(PendingList, RetryList) ->
-    %% FIXME: keystore
     RetryList ++
     lists:map(
         fun({_, Element}) -> Element end,
