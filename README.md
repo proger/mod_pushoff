@@ -2,7 +2,7 @@
 
 mod_pushoff relays offline messages as push notifications.
 
-Currently supporting [Legacy APNS Binary Provider API](https://developer.apple.com/library/content/documentation/NetworkingInternet/Conceptual/RemoteNotificationsPG/BinaryProviderAPI.html#//apple_ref/doc/uid/TP40008194-CH13-SW1)
+Currently supporting solely [Legacy APNS Binary Provider API](https://developer.apple.com/library/content/documentation/NetworkingInternet/Conceptual/RemoteNotificationsPG/BinaryProviderAPI.html#//apple_ref/doc/uid/TP40008194-CH13-SW1)
 
 ## Prerequisites
 
@@ -13,13 +13,26 @@ Currently supporting [Legacy APNS Binary Provider API](https://developer.apple.c
 
 ```bash
 git clone https://github.com/proger/mod_pushoff.git
-# copy the source code folder to the module sources folder of your ejabberd
-# installation (substitute ~ for the home directory of the user that runs ejabberd)
+# Copy the source code folder to the module sources folder of your ejabberd,
+# (substitute ~ for the home directory of the user that runs ejabberd).
 sudo cp -R mod_pushoff ~/.ejabberd-modules/sources/
-# if done right ejabberdctl will list mod_pushoff as available module
+# If done right ejabberdctl will list mod_pushoff as available:
 ejabberdctl modules_available
-# automatically compile and install mod_pushoff
+# Automatically compile and install mod_pushoff:
 ejabberdctl module_install mod_pushoff
+```
+
+### Upgrading
+
+```bash
+ejabberdctl module_upgrade mod_pushoff
+# For some reason module_upgrade does not reload auxiliary erlang modules
+# and leaves mod_pushoff stopped.
+# Kick it manually (sub relevant hosts for <<"localhost">>):
+
+ejabberdctl debug
+> l(mod_pushoff_apns).
+> gen_mod:start_module(<<"localhost">>, mod_pushoff).
 ```
 
 ## Example configuration
