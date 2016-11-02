@@ -124,12 +124,12 @@ register_client(#jid{luser = LUser,
                             #pushoff_registration{bare_jid = {LUser, LServer},
                                                   token = ApnsToken,
                                                   backend_id = BackendId,
-                                                  timestamp = now()};
+                                                  timestamp = erlang:timestamp()};
 
                         [OldReg] ->
                             OldReg#pushoff_registration{token = ApnsToken,
                                                         backend_id = BackendId,
-                                                        timestamp = now()}
+                                                        timestamp = erlang:timestamp()}
                     end,
                 mnesia:write(Registration),
                 ok
