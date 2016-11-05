@@ -218,7 +218,7 @@ handle_info(send, #state{certfile = CertFile,
                                         retry_timestamp = Timestamp};
 
                         ok ->
-                            ?DEBUG("sending to APNS successful: ~p", [NewPendingList]),
+                            ?DEBUG("sending to APNS successful: ~p", [length(NewPendingList)]),
                             Timestamp = erlang:timestamp(),
                             NewPendingTimer =
                             erlang:send_after(?PENDING_INTERVAL, self(),
@@ -269,7 +269,6 @@ make_notifications(PendingList) ->
         fun({MessageId, {_, Payload, Token, _}}, Acc) ->
             PushMessage = {struct, [{xmpp, {struct, Payload}}]},
             EncodedMessage = iolist_to_binary(mochijson2:encode(PushMessage)),
-            ?DEBUG("++++++ Encoded message: ~p", [EncodedMessage]),
             MessageLength = size(EncodedMessage),
             TokenLength = size(Token),
             Frame =
