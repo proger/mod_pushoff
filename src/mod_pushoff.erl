@@ -428,22 +428,19 @@ start_worker(Host, #backend_config{type = Type, certfile = CertFile, gateway = G
 -spec(stanza_to_payload(jid(), xmlelement()) -> payload()).
 
 stanza_to_payload(#jid{luser = FromU, lserver = FromS},
-                  #xmlel{name = <<"message">>, children = Children}) ->
+                  #xmlel{name = <<"message">>, attrs = Attrs, children = Children}) ->
     From = iolist_to_binary([FromU, <<"@">> ,FromS]),
-    BodyPred =
-        fun (#xmlel{name = <<"body">>}) -> true;
-            (_) -> false
-        end,
-    Body = case lists:filter(BodyPred, Children) of
+    Body = case [CData || #xmlel{name = <<"body">>, children = [{xmlcdata, CData}]} <- Children] of
                [] -> <<"">>;
-               [#xmlel{children = [{xmlcdata, CData}]}|_] -> CData
+               [CData|_] when size(CData) >= 1024 ->
+                   %% Truncate messages as you can't fit too much data into one push
+                   binary_part(CData, 1024);
+               [CData|_] -> CData
            end,
-    % Truncate messages as you can't fit too much data into one push
-    Body1 = case size(Body) of
-                N when N >= 1024 -> binary_part(Body, 1024);
-                _ -> Body
-            end,
-    [{body, Body1}, {from, From}];
+    case [Id || {<<"id">>, Id} <- Attrs] of
+        [] -> [{body, Body}, {from, From}];
+        [Id|_] -> [{id, Id}, {body, Body}, {from, From}]
+    end;
 
 stanza_to_payload(_, _) -> ignore.
 

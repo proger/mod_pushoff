@@ -14,6 +14,8 @@ class Jabber(ClientXMPP):
     def __init__(self, jid, password):
         ClientXMPP.__init__(self, jid, password)
 
+        self.use_message_ids = True
+
         self.__server = jid.split('@')[-1]
 
         self.add_event_handler("session_start", self.session_start)
