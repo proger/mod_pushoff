@@ -24,16 +24,15 @@ ejabberdctl module_install mod_pushoff
 ### Upgrading
 
 ```bash
-ejabberdctl module_upgrade mod_pushoff
+ejabberdctl module_upgrade mod_pushoff % same as uninstall + install
 ```
 
 For some reason `module_upgrade` does not reload auxiliary erlang modules and leaves mod_pushoff stopped.
 Kick it manually inside `ejabberdctl debug`:
 
 ``` erlang
-% (sub relevant hosts for <<"localhost">>)
 l(mod_pushoff_apns).
-gen_mod:start_module(<<"localhost">>, mod_pushoff).
+[catch gen_mod:start_module(Host, mod_pushoff) || Host <- ejabberd_config:get_myhosts()].
 ```
 
 ### Operation Notes
