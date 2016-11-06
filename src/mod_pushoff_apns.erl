@@ -55,7 +55,7 @@
         {certfile :: string(),
          out_socket :: ssl:socket(),
          pending_list :: [{pos_integer(), any()}],
-         send_list :: [any()],
+         send_queue :: queue:queue(any()),
          retry_list :: [any()],
          pending_timer :: reference(),
          retry_timer :: reference(),
@@ -71,7 +71,7 @@ init([CertFile, Gateway]) ->
     ssl:start(),
     {ok, #state{certfile = force_string(CertFile),
                 pending_list = [],
-                send_list = [],
+                send_queue = queue:new(),
                 retry_list = [],
                 pending_timer = make_ref(),
                 retry_timer = make_ref(),
@@ -107,12 +107,10 @@ handle_info({ssl, _Socket, Data},
                         7 ->
                             ?ERROR_MSG("APNS: invalid payload size, retrying...", []),
                             {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
-                            State#state{
-                                pending_list = NewPending,
-                                retry_list =
-                                [{UserB, [], Token, DisableArgs}|RetryList],
-                                retry_timer = NewRetryTimer,
-                                retry_timestamp = Timestamp};
+                            State#state{pending_list = NewPending,
+                                        retry_list = [{UserB, [], Token, DisableArgs}|RetryList],
+                                        retry_timer = NewRetryTimer,
+                                        retry_timestamp = Timestamp};
 
                         8 ->
                             ?ERROR_MSG("APNS error: invalid token for ~p ~p", [UserB, Token]),
@@ -140,25 +138,21 @@ handle_info({ssl_closed, _SslSocket}, State) ->
     ?INFO_MSG("connection to APNS closed!", []),
     {noreply, State#state{out_socket = undefined}};
 
-%% retry_timeout
-handle_info({retry, Timestamp},
-            #state{send_list = SendList,
+handle_info({retry, StoredTimestamp},
+            #state{send_queue = SendQ,
                    retry_list = RetryList,
                    pending_timer = PendingTimer,
                    retry_timestamp = StoredTimestamp} = State) ->
-    NewState =
-    case Timestamp of
-        StoredTimestamp ->
-            NewSendList = SendList ++ RetryList,
-            case erlang:read_timer(PendingTimer) of
-                false -> self() ! send;
-                _ -> State
-            end,
-            State#state{send_list = NewSendList, retry_list = []};
-
-        _ -> State
+    case erlang:read_timer(PendingTimer) of
+        false -> self() ! send;
+        _ -> meh
     end,
-    {noreply, NewState};
+    {noreply,
+     State#state{send_queue = lists:foldl(fun(E, Q) -> queue:snoc(Q, E) end, SendQ, RetryList),
+                 retry_list = []}};
+
+handle_info({retry, _T1}, #state{retry_timestamp = _T2} = State) ->
+    {noreploy, State};
 
 handle_info({pending_timeout, Timestamp},
             #state{pending_timestamp = StoredTimestamp} = State) ->
@@ -175,7 +169,7 @@ handle_info({pending_timeout, Timestamp},
 handle_info(send, #state{certfile = CertFile,
                          out_socket = OldSocket,
                          pending_list = PendingList,
-                         send_list = SendList,
+                         send_queue = SendQ,
                          retry_list = RetryList,
                          retry_timer = RetryTimer,
                          message_id = MessageId,
@@ -184,22 +178,22 @@ handle_info(send, #state{certfile = CertFile,
     case get_socket(OldSocket, CertFile, Gateway) of
         {error, Reason} ->
             ?ERROR_MSG("connection to APNS failed: ~p", [Reason]),
-            NewRetryList = pending_to_retry(PendingList, RetryList),
+            {NewPending, NewRetryList} = pending_to_retry(PendingList, RetryList),
             {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
             State#state{out_socket = error,
-                        pending_list = [],
+                        pending_list = NewPending,
                         retry_list = NewRetryList,
                         retry_timer = NewRetryTimer,
                         retry_timestamp = Timestamp};
 
         Socket ->
             {NewPendingList,
-             NewSendList,
-             NewMessageId} = enqueue_some(PendingList, SendList, MessageId),
+             NewSendQ,
+             NewMessageId} = enqueue_some(PendingList, SendQ, MessageId),
             case NewPendingList of
                 [] ->
                     State#state{pending_list = NewPendingList,
-                                send_list = NewSendList,
+                                send_queue = NewSendQ,
                                 message_id = NewMessageId};
 
                 _ ->
@@ -207,12 +201,12 @@ handle_info(send, #state{certfile = CertFile,
                     case ssl:send(Socket, Notifications) of
                         {error, Reason} ->
                             ?ERROR_MSG("sending to APNS failed: ~p", [Reason]),
-                            NewRetryList = pending_to_retry(NewPendingList, RetryList),
+                            {NewPendingList1, NewRetryList} = pending_to_retry(NewPendingList, RetryList),
                             {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
                             State#state{out_socket = error,
-                                        pending_list = [],
+                                        pending_list = NewPendingList1,
                                         retry_list = NewRetryList,
-                                        send_list = NewSendList,
+                                        send_queue = NewSendQ,
                                         retry_timer = NewRetryTimer,
                                         message_id = NewMessageId,
                                         retry_timestamp = Timestamp};
@@ -220,12 +214,11 @@ handle_info(send, #state{certfile = CertFile,
                         ok ->
                             ?DEBUG("sending to APNS successful: ~p", [length(NewPendingList)]),
                             Timestamp = erlang:timestamp(),
-                            NewPendingTimer =
-                            erlang:send_after(?PENDING_INTERVAL, self(),
-                                              {pending_timeout, Timestamp}),
+                            NewPendingTimer = erlang:send_after(?PENDING_INTERVAL, self(),
+                                                                {pending_timeout, Timestamp}),
                             State#state{out_socket = Socket,
                                         pending_list = NewPendingList,
-                                        send_list = NewSendList,
+                                        send_queue = NewSendQ,
                                         pending_timer = NewPendingTimer,
                                         message_id = NewMessageId,
                                         pending_timestamp = Timestamp}
@@ -241,16 +234,15 @@ handle_info(Info, State) ->
 handle_call(_Req, _From, State) -> {reply, {error, badarg}, State}.
 
 handle_cast({dispatch, UserBare, Payload, Token, DisableArgs},
-            #state{send_list = SendList,
+            #state{send_queue = SendQ,
                    pending_timer = PendingTimer,
                    retry_timer = RetryTimer} = State) ->
-    % TODO: use queue?
-    NewSendList = SendList ++ [{UserBare, Payload, Token, DisableArgs}],
     case {erlang:read_timer(PendingTimer), erlang:read_timer(RetryTimer)} of
         {false, false} -> self() ! send;
         _ -> ok
     end,
-    {noreply, State#state{send_list = NewSendList}};
+    {noreply,
+     State#state{send_queue = queue:snoc(SendQ, {UserBare, Payload, Token, DisableArgs})}};
 
 handle_cast(_Req, State) -> {reply, {error, badarg}, State}.
 
@@ -303,13 +295,6 @@ get_socket(OldSocket, CertFile, Gateway) ->
        _ -> OldSocket
     end.
 
-%% XXX does this even typecheck?
-pending_to_retry(PendingList, RetryList) ->
-    RetryList ++
-    lists:map(
-        fun({_, Element}) -> Element end,
-        PendingList).
-
 restart_retry_timer(OldTimer) ->
     erlang:cancel_timer(OldTimer),
     Timestamp = erlang:timestamp(),
@@ -320,6 +305,8 @@ restart_retry_timer(OldTimer) ->
 wrapping_successor(Max) when Max =:= (4294967296 - 1) -> 0;
 wrapping_successor(OldMessageId) -> OldMessageId + 1.
 
+-spec enumerate_from(pos_integer(), [any()]) -> [{pos_integer(), any()}].
+
 enumerate_from(N0, Xs) ->
     lists:foldl(
       fun(X, {N, Acc}) ->
@@ -329,15 +316,25 @@ enumerate_from(N0, Xs) ->
       {N0, []},
       Xs).
 
-enqueue_some(PendingList, SendList, MessageId) ->
+-spec enqueue_some([any()], queue:queue(any()), pos_integer())
+                  -> {[any()], queue:queue(any()), pos_integer()}.
+
+enqueue_some(PendingList, SendQ, MessageId) ->
     PendingSpace = ?MAX_PENDING_NOTIFICATIONS - length(PendingList),
-    {NewPendingElements, NewSendList} =
-        case length(SendList) > PendingSpace of
-            true -> lists:split(PendingSpace, SendList);
-            false -> {SendList, []}
+    {NewPendingElements, NewSendQ} =
+        case queue:len(SendQ) > PendingSpace of
+            true ->
+                {P, Q} = queue:split(PendingSpace, SendQ),
+                {queue:to_list(P), Q};
+            false ->
+                {queue:to_list(SendQ), queue:new()}
         end,
     {NewMessageId, Result} = enumerate_from(MessageId, NewPendingElements),
-    {PendingList ++ Result, NewSendList, NewMessageId}.
+    {PendingList ++ Result, NewSendQ, NewMessageId}.
+
+-spec pending_to_retry([any()], [any()]) -> {[any()], [any()]}.
+
+pending_to_retry(PendingList, RetryList) -> {[], RetryList ++ [E || {_, E} <- PendingList]}.
 
 force_string(V) when is_binary(V) -> binary_to_list(V);
 force_string(V) -> V.
@@ -349,8 +346,8 @@ test() ->
     Payload = [{body, <<"sup">>},
                {from, <<"john@localhost">>}],
     Token = <<"token">>,
-    SendList = [{UserBare, Payload, Token, DisableArgs}],
-    {NP, _NS, _NMID} = enqueue_some([], SendList, 0),
+    SendQ = queue:from_list([{UserBare, Payload, Token, DisableArgs}]),
+    {NP, _NS, _NMID} = enqueue_some([], SendQ, 0),
     make_notifications(NP).
 
 %% Local Variables:
