@@ -24,10 +24,10 @@ ejabberdctl module_install mod_pushoff
 ### Upgrading
 
 ```bash
-ejabberdctl module_upgrade mod_pushoff % same as uninstall + install
+ejabberdctl module_upgrade mod_pushoff # same as uninstall + install
 ```
 
-For some reason `module_upgrade` does not reload auxiliary erlang modules and leaves mod_pushoff stopped.
+`module_upgrade` does not restart modules and thus leaves mod_pushoff stopped.
 Kick it manually inside `ejabberdctl debug`:
 
 ``` erlang
