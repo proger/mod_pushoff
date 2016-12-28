@@ -152,7 +152,7 @@ handle_info({retry, StoredTimestamp},
                  retry_list = []}};
 
 handle_info({retry, _T1}, #state{retry_timestamp = _T2} = State) ->
-    {noreploy, State};
+    {noreply, State};
 
 handle_info({pending_timeout, Timestamp},
             #state{pending_timestamp = StoredTimestamp} = State) ->
