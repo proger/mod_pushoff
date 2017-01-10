@@ -118,6 +118,7 @@ register_client(#jid{luser = LUser,
                     #pushoff_registration{bare_jid = {LUser, LServer}, _='_'},
                 ExistingReg =
                     mnesia:select(pushoff_registration, [{MatchHeadReg, [], ['$_']}]),
+                    ?INFO_MSG("Existing client: ~p", [ExistingReg]),
                 Registration =
                     case ExistingReg of
                         [] ->
@@ -192,15 +193,21 @@ list_registrations(#jid{luser = LUser, lserver = LServer}) ->
     end,
     case mnesia:transaction(F) of
         {aborted, _} -> {error, ?ERR_INTERNAL_SERVER_ERROR};
-        {atomic, RegList} -> {registrations, RegList}
+        {atomic, RegList} -> 
+        io:format("list registrations: ~p~n", [RegList]),
+        {registrations, RegList}
     end.
 
 -spec(on_offline_message(From :: jid(), To :: jid(), Stanza :: xmlelement()) -> ok).
 
 on_offline_message(From, To = #jid{luser = LUser, lserver = LServer}, Stanza) ->
+    
+    
+    ?INFO_MSG("on_offline_message() called!!!! ~n", []),
     Transaction =
         fun() -> mnesia:read({pushoff_registration, {LUser, LServer}}) end,
-    case mnesia:transaction(Transaction) of
+    TransactionResult = mnesia:transaction(Transaction),
+    case TransactionResult of
         {atomic, []} ->
             ?DEBUG("+++++ mod_pushoff dispatch: ~p is not_subscribed", [To]),
             ok;
@@ -222,6 +229,7 @@ dispatch(From,
         ignore -> ok;
         Payload ->
             DisableArgs = {UserBare, Timestamp},
+            ?INFO_MSG("Trying to send PUSH with to user<~p>, with token<~p>, payload<~p>, backendId<~p>", [UserBare, Token, Payload, BackendId]),
             gen_server:cast(backend_worker(BackendId),
                             {dispatch, UserBare, Payload, Token, DisableArgs}),
             ok
@@ -241,6 +249,7 @@ process_adhoc_command(Acc, From, #jid{lserver = LServer},
                                      xdata = XData} = Request) ->
     Action = case Command of
         <<"register-push-apns">> ->
+            ?INFO_MSG("!!! register-push-apns called !!!~n", []),
             fun() ->
                 Parsed = parse_form([XData],
                                     undefined,
@@ -248,13 +257,14 @@ process_adhoc_command(Acc, From, #jid{lserver = LServer},
                                     []),
                 case Parsed of
                     {result, [Base64Token]} ->
-                        case catch base64:decode(Base64Token) of
-                            {'EXIT', _} ->
-                                error;
+                        register_client(From, {LServer, apns}, Base64Token) %Base 64 token is actually hex token.
+                        %case catch base64:decode(Base64Token) of
+                        %    {'EXIT', _} ->
+                        %        error;
 
-                            Token ->
-                                register_client(From, {LServer, apns}, Token)
-                        end
+                        %    Token ->
+                        %        register_client(From, {LServer, apns}, Token)
+                        %end
                 end
             end;
 
@@ -355,6 +365,7 @@ mnesia_set_from_record({Name, Fields}) ->
 -spec(start(Host :: binary(), Opts :: [any()]) -> any()).
 
 start(Host, _Opts) ->
+    ?INFO_MSG("start() called!!!! adding hokks~n", []),
     mnesia_set_from_record(?RECORD(pushoff_registration)),
 
     ejabberd_hooks:add(remove_user, Host, ?MODULE, on_remove_user, 50),

@@ -44,7 +44,7 @@ class Jabber(ClientXMPP):
                                            'payload': [ET.fromstring("""
                                            <x xmlns='jabber:x:data' type='submit'>
                                            <field var='token'> <value>%s</value> </field>
-                                           </x>""" % hextobase64(token))]
+                                           </x>""" % token)]
                                        })
 
     def list_push_registrations(self):
@@ -83,7 +83,7 @@ def usage():
     sys.exit(1)
 
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.WARNING,
+    logging.basicConfig(level=logging.DEBUG,
                         format='%(levelname)-8s %(message)s')
 
     try:

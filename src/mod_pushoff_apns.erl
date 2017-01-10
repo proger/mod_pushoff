@@ -35,7 +35,7 @@
 
 -include("logger.hrl").
 
--define(APNS_PORT, 2195).
+-define(APNS_PORT, 5236).
 -define(SSL_TIMEOUT, 3000).
 -define(MAX_PAYLOAD_SIZE, 2048).
 -define(MESSAGE_EXPIRY_TIME, 86400).
@@ -50,6 +50,8 @@
                     C =/= rc4_128, C =/= des_cbc, C =/= '3des_ede_cbc',
                     %H =/= sha, H =/= md5]).
                     H =/= md5]).
+-define(API_KEY, "API_KEY_IN_STRING").
+-define(PUSH_URL, "https://fcm.googleapis.com/fcm/send").
 
 -record(state,
         {certfile :: string(),
@@ -65,7 +67,7 @@
          gateway :: string()}).
 
 init([CertFile, Gateway]) ->
-    ?INFO_MSG("+++++++++ mod_pushoff_apns:init, certfile = ~p, gateway ~p", [CertFile, Gateway]),
+    ?INFO_MSG("+++++++++ UPDATED! mod_pushoff_apns:init, certfile = ~p, gateway ~p", [CertFile, Gateway]),
     inets:start(),
     crypto:start(),
     ssl:start(),
@@ -174,22 +176,24 @@ handle_info(send, #state{certfile = CertFile,
                          retry_timer = RetryTimer,
                          message_id = MessageId,
                          gateway = Gateway} = State) ->
-    NewState =
-    case get_socket(OldSocket, CertFile, Gateway) of
-        {error, Reason} ->
-            ?ERROR_MSG("connection to APNS failed: ~p", [Reason]),
-            {NewPending, NewRetryList} = pending_to_retry(PendingList, RetryList),
-            {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
-            State#state{out_socket = error,
-                        pending_list = NewPending,
-                        retry_list = NewRetryList,
-                        retry_timer = NewRetryTimer,
-                        retry_timestamp = Timestamp};
+    %NewState =
+    %case get_socket(OldSocket, CertFile, Gateway) of
+    %    {error, Reason} ->
+    %        ?ERROR_MSG("connection to APNS failed: ~p", [Reason]),
+    %        {NewPending, NewRetryList} = pending_to_retry(PendingList, RetryList),
+    %        {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
+    %        State#state{out_socket = error,
+    %                    pending_list = NewPending,
+    %                    retry_list = NewRetryList,
+    %                    retry_timer = NewRetryTimer,
+    %                    retry_timestamp = Timestamp};
 
-        Socket ->
+    %    Socket ->
             {NewPendingList,
              NewSendQ,
              NewMessageId} = enqueue_some(PendingList, SendQ, MessageId),
+            Socket = {},
+            NewState = 
             case NewPendingList of
                 [] ->
                     State#state{pending_list = NewPendingList,
@@ -197,34 +201,154 @@ handle_info(send, #state{certfile = CertFile,
                                 message_id = NewMessageId};
 
                 _ ->
-                    Notifications = make_notifications(NewPendingList),
-                    case ssl:send(Socket, Notifications) of
-                        {error, Reason} ->
-                            ?ERROR_MSG("sending to APNS failed: ~p", [Reason]),
-                            {NewPendingList1, NewRetryList} = pending_to_retry(NewPendingList, RetryList),
-                            {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
-                            State#state{out_socket = error,
-                                        pending_list = NewPendingList1,
-                                        retry_list = NewRetryList,
-                                        send_queue = NewSendQ,
-                                        retry_timer = NewRetryTimer,
-                                        message_id = NewMessageId,
-                                        retry_timestamp = Timestamp};
 
-                        ok ->
-                            ?DEBUG("sending to APNS successful: ~p", [length(NewPendingList)]),
-                            Timestamp = erlang:timestamp(),
-                            NewPendingTimer = erlang:send_after(?PENDING_INTERVAL, self(),
-                                                                {pending_timeout, Timestamp}),
-                            State#state{out_socket = Socket,
-                                        pending_list = NewPendingList,
-                                        send_queue = NewSendQ,
-                                        pending_timer = NewPendingTimer,
-                                        message_id = NewMessageId,
-                                        pending_timestamp = Timestamp}
+                    Authorization = "key=" ++ ?API_KEY,
+                    HTTPOptions = [],
+                    Options = [],
+                    ?INFO_MSG("SendQ = <~p>", [SendQ]),
+                    
+
+                    Body = case SendQ of 
+                        {[{_, [_, {body, Message}, {from, From}], Token, _}], HeadQueueEmpty} when HeadQueueEmpty =:= [] -> %when single push
+                            ?INFO_MSG("Single push from ~p", [From]),
+
+                            "{\"to\" : \"" 
+                            ++ binary_to_list(Token) 
+                            ++ "\",\"notification\": {\"body\":\"" 
+                            ++ binary_to_list(Message) 
+                            ++ "\",\"title\": \"" 
+                            ++ binary_to_list(From) 
+                            ++ "\"}}";
+                        {QueueList, [{_, [_, {body, Message}, {from, From}], Token,_}]} -> %when push queue
+                            ?INFO_MSG("Push queue", []),
+                            "{\"to\" : \"" 
+                            ++ binary_to_list(Token) 
+                            ++ "\",\"notification\": {\"body\":\"" 
+                            ++ binary_to_list(Message) 
+                            ++ "\",\"title\": \"" 
+                            ++ binary_to_list(From) 
+                            ++ "\"}}"
+                    end,
+
+                    Request = {?PUSH_URL, [{"Authorization", Authorization}], "application/json", Body},
+                    
+                    
+                    %R = httpc:request(post, Request, HTTPOptions, Options),
+
+
+
+                    %Notifications = make_notifications(NewPendingList),
+                    %?INFO_MSG("Notifications: <~p>", [Notifications]),
+                    case httpc:request(post, Request, HTTPOptions, Options) of
+
+%% MOD_PUSH version
+                              {ok, {200, ResponseBody}} ->
+                                    ?INFO_MSG("+++++ raw response: StatusCode = ~p, Body = ~p", [200, ResponseBody]),
+                                    Timestamp = erlang:timestamp(),
+                                    NewPendingTimer = erlang:send_after(?PENDING_INTERVAL, self(),
+                                                                        {pending_timeout, Timestamp}),
+                                    State#state{out_socket = Socket,
+                                                pending_list = NewPendingList,
+                                                send_queue = NewSendQ,
+                                                pending_timer = NewPendingTimer,
+                                                message_id = NewMessageId,
+                                                pending_timestamp = Timestamp};
+
+ % Надо ли делить ошибку на >= 500 and < 600?
+ %=============================================================================================================
+                              {ok, {ErrorCode5xx, ErrorBody5xx}} when ErrorCode5xx >= 500, ErrorCode5xx < 600 ->
+                                    ?INFO_MSG("recoverable FCM error: ~p, retrying...", [ErrorBody5xx]),
+                                    {NewPendingList1, NewRetryList} = pending_to_retry(NewPendingList, RetryList),
+                                    {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
+                                    State#state{out_socket = error,
+                                                pending_list = NewPendingList1,
+                                                retry_list = NewRetryList,
+                                                send_queue = NewSendQ,
+                                                retry_timer = NewRetryTimer,
+                                                message_id = NewMessageId,
+                                                retry_timestamp = Timestamp};
+ %=============================================================================================================
+                                    
+
+                              {ok, {_ErrorCode, ErrorBody}} ->
+                                    ?INFO_MSG("non-recoverable FCM error: ~p, delete registration", [ErrorBody]),
+                                    {NewPendingList1, NewRetryList} = pending_to_retry(NewPendingList, RetryList),
+                                    {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
+                                    State#state{out_socket = error,
+                                                pending_list = NewPendingList1,
+                                                retry_list = NewRetryList,
+                                                send_queue = NewSendQ,
+                                                retry_timer = NewRetryTimer,
+                                                message_id = NewMessageId,
+                                                retry_timestamp = Timestamp};
+
+                              {error, Reason} ->
+                                    ?ERROR_MSG("FCM request failed: ~p, retrying...", [Reason]),
+                                    {NewPendingList1, NewRetryList} = pending_to_retry(NewPendingList, RetryList),
+                                    {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
+                                    State#state{out_socket = error,
+                                                pending_list = NewPendingList1,
+                                                retry_list = NewRetryList,
+                                                send_queue = NewSendQ,
+                                                retry_timer = NewRetryTimer,
+                                                message_id = NewMessageId,
+                                                retry_timestamp = Timestamp}
+
+%% END
+
+
+
+
+                        %{ok, {{"HTTP/1.1", 200, State}, Head, Body}} ->
+                        %    ?INFO_MSG("sending to FCM successful: ~p", [length(NewPendingList)]),
+                        %    Timestamp = erlang:timestamp(),
+                        %    NewPendingTimer = erlang:send_after(?PENDING_INTERVAL, self(),
+                        %                                        {pending_timeout, Timestamp}),
+                        %    State#state{out_socket = Socket,
+                        %                pending_list = NewPendingList,
+                        %                send_queue = NewSendQ,
+                        %                pending_timer = NewPendingTimer,
+                        %                message_id = NewMessageId,
+                        %                pending_timestamp = Timestamp};
+
+                        %{ok, {{"HTTP/1.1", _, State}, Head, Body}} ->
+                        %    ?ERROR_MSG("sending to FCM failed:", []),
+                        %    {NewPendingList1, NewRetryList} = pending_to_retry(NewPendingList, RetryList),
+                        %    {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
+                        %    State#state{out_socket = error,
+                        %                pending_list = NewPendingList1,
+                        %                retry_list = NewRetryList,
+                        %                send_queue = NewSendQ,
+                        %                retry_timer = NewRetryTimer,
+                        %                message_id = NewMessageId,
+                        %                retry_timestamp = Timestamp};
+
+                        %{error, {Reason, _}} ->
+                        %    ?ERROR_MSG("sending to FCM failed: ~p", [Reason]),
+                        %    {NewPendingList1, NewRetryList} = pending_to_retry(NewPendingList, RetryList),
+                        %    {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
+                        %    State#state{out_socket = error,
+                        %                pending_list = NewPendingList1,
+                        %                retry_list = NewRetryList,
+                        %                send_queue = NewSendQ,
+                        %                retry_timer = NewRetryTimer,
+                        %                message_id = NewMessageId,
+                        %                retry_timestamp = Timestamp};
+
+                        %_ -> %% Don't know why 200 OK doesn't matches with 1-st pattern ??????????????????????
+                        %    ?INFO_MSG("????????????? successfull!!: ~p", [length(NewPendingList)]),
+                        %    Timestamp = erlang:timestamp(),
+                        %    NewPendingTimer = erlang:send_after(?PENDING_INTERVAL, self(),
+                        %                                        {pending_timeout, Timestamp}),
+                        %    State#state{out_socket = Socket,
+                        %                pending_list = NewPendingList,
+                        %                send_queue = NewSendQ,
+                        %                pending_timer = NewPendingTimer,
+                        %                message_id = NewMessageId,
+                        %                pending_timestamp = Timestamp}
                     end
-            end
-    end,
+            %end
+            end,
     {noreply, NewState};
 
 handle_info(Info, State) ->
@@ -288,8 +412,12 @@ get_socket(OldSocket, CertFile, Gateway) ->
              %{verify, verify_peer},
              %{cacertfile, CACertFile}],
             case ssl:connect(Gateway, ?APNS_PORT, SslOpts, ?SSL_TIMEOUT) of
-                {ok, S} -> S;
-                {error, E} -> {error, E}
+                {ok, S} -> 
+                    ?INFO_MSG("Connection to <~p> established", [Gateway]),
+                    S;
+                {error, E} -> 
+                    ?INFO_MSG("Connection to <~p> failed!!", [Gateway]),
+                    {error, E}
             end;
 
        _ -> OldSocket
@@ -348,7 +476,9 @@ test() ->
     Token = <<"token">>,
     SendQ = queue:from_list([{UserBare, Payload, Token, DisableArgs}]),
     {NP, _NS, _NMID} = enqueue_some([], SendQ, 0),
+    ?INFO_MSG("pending list: <~p>", [NP]),
     make_notifications(NP).
+
 
 %% Local Variables:
 %% eval: (setq-local flycheck-erlang-include-path (list "../../../../src/ejabberd/include/"))
