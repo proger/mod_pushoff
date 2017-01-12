@@ -92,7 +92,8 @@
 -record(backend_config,
         {type :: backend_type(),
          certfile = <<"">> :: binary(),
-         gateway = <<"">> :: binary()}).
+         gateway = <<"">> :: binary(),
+         api_key = <<"">> :: binary()}).
 
 %% mnesia table
 -record(pushoff_registration, {bare_jid :: bare_jid(),
@@ -194,8 +195,8 @@ list_registrations(#jid{luser = LUser, lserver = LServer}) ->
     case mnesia:transaction(F) of
         {aborted, _} -> {error, ?ERR_INTERNAL_SERVER_ERROR};
         {atomic, RegList} -> 
-        io:format("list registrations: ~p~n", [RegList]),
-        {registrations, RegList}
+            io:format("list registrations: ~p~n", [RegList]),
+            {registrations, RegList}
     end.
 
 -spec(on_offline_message(From :: jid(), To :: jid(), Stanza :: xmlelement()) -> ok).
@@ -229,7 +230,7 @@ dispatch(From,
         ignore -> ok;
         Payload ->
             DisableArgs = {UserBare, Timestamp},
-            ?INFO_MSG("Trying to send PUSH with to user<~p>, with token<~p>, payload<~p>, backendId<~p>", [UserBare, Token, Payload, BackendId]),
+            ?INFO_MSG("PUSH to user<~p>, with token<~p>, payload<~p>, backendId<~p>", [UserBare, Token, Payload, BackendId]),
             gen_server:cast(backend_worker(BackendId),
                             {dispatch, UserBare, Payload, Token, DisableArgs}),
             ok
@@ -402,16 +403,18 @@ parse_backends(Plists) ->
 
 parse_backend(Opts) ->
     RawType = proplists:get_value(type, Opts),
+    ?INFO_MSG("IN PARSE_BACKEND RawType <~p>", [RawType]),
     Type =
         case lists:member(RawType, [apns]) of
             true -> RawType
         end,
     CertFile = proplists:get_value(certfile, Opts),
     Gateway = proplists:get_value(gateway, Opts),
-
+    ApiKey = proplists:get_value(api_key, Opts),
     #backend_config{type = Type,
                     certfile = CertFile,
-                    gateway = Gateway}.
+                    gateway = Gateway,
+                    api_key = ApiKey}.
 
 
 -spec(backend_worker(backend_id()) -> atom()).
@@ -426,13 +429,13 @@ backend_configs(Host) ->
 
 -spec(start_worker(Host :: binary(), Backend :: backend_config()) -> ok).
 
-start_worker(Host, #backend_config{type = Type, certfile = CertFile, gateway = Gateway}) ->
+start_worker(Host, #backend_config{type = Type, certfile = CertFile, gateway = Gateway, api_key = ApiKey}) ->
     Module = proplists:get_value(Type, [{apns, ?MODULE_APNS}]),
     Worker = backend_worker({Host, Type}),
     BackendSpec = {Worker,
                    {gen_server, start_link,
                     [{local, Worker}, Module,
-                     [CertFile, Gateway], []]},
+                     [CertFile, Gateway, ApiKey], []]},
                    permanent, 1000, worker, [?MODULE]},
     supervisor:start_child(ejabberd_sup, BackendSpec).
 
