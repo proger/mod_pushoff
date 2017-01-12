@@ -271,6 +271,7 @@ handle_info(send, #state{certfile = CertFile,
                                     
 
                               {ok, {_ErrorCode, ErrorBody}} ->
+                          % тут нужно крашить прогу
                                     ?INFO_MSG("non-recoverable FCM error: ~p, delete registration", [ErrorBody]),
                                     {NewPendingList1, NewRetryList} = pending_to_retry(NewPendingList, RetryList),
                                     {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
