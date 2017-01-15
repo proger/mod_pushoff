@@ -40,7 +40,7 @@
 -define(MAX_PAYLOAD_SIZE, 2048).
 -define(MESSAGE_EXPIRY_TIME, 86400).
 -define(MESSAGE_PRIORITY, 10).
--define(MAX_PENDING_NOTIFICATIONS, 16).
+-define(MAX_PENDING_NOTIFICATIONS, 1).
 -define(PENDING_INTERVAL, 3000).
 -define(RETRY_INTERVAL, 30000).
 -define(CIPHERSUITES,
@@ -79,7 +79,7 @@ init([CertFile, Gateway, ApiKey]) ->
                 retry_timer = make_ref(),
                 message_id = 0,
                 gateway = force_string(Gateway),
-                api_key = force_string(ApiKey)}}.
+                api_key = "key=" ++ force_string(ApiKey)}}.
 
 handle_info({ssl, _Socket, Data},
             #state{pending_list = PendingList,
@@ -181,6 +181,7 @@ handle_info(send, #state{certfile = CertFile,
             {NewPendingList,
              NewSendQ,
              NewMessageId} = enqueue_some(PendingList, SendQ, MessageId),
+
             Socket = {},
             NewState = 
             case NewPendingList of
@@ -191,34 +192,26 @@ handle_info(send, #state{certfile = CertFile,
 
                 _ ->
 
-                    Authorization = "key=" ++ ApiKey,
                     HTTPOptions = [],
                     Options = [],
                     
-                    Body = case SendQ of 
-                        {[{_, [_, {body, Message}, {from, From}], Token, _}], HeadQueueEmpty} when HeadQueueEmpty =:= [] -> %when single push
-                            ?INFO_MSG("Single push from ~p", [From]),
-
-                            "{\"to\" : \"" 
-                            ++ binary_to_list(Token) 
-                            ++ "\",\"notification\": {\"body\":\"" 
-                            ++ binary_to_list(Message) 
-                            ++ "\",\"title\": \"" 
-                            ++ binary_to_list(From) 
-                            ++ "\"}}";
-                        {QueueList, [{_, [_, {body, Message}, {from, From}], Token,_}]} -> %when push queue
-                            ?INFO_MSG("Push queue", []),
-                            "{\"to\" : \"" 
-                            ++ binary_to_list(Token) 
-                            ++ "\",\"notification\": {\"body\":\"" 
-                            ++ binary_to_list(Message) 
-                            ++ "\",\"title\": \"" 
-                            ++ binary_to_list(From) 
-                            ++ "\"}}"
+                    %?INFO_MSG("PendingList now <~p>", [NewPendingList]),
+                    [Head | Tail] = NewPendingList,
+                    %?INFO_MSG("HEAD OF PENDING LIST = <~p>", [Head]),
+                    Body = case Head of 
+                        {_MessageId, {_, _Payload, _Token, _}} ->
+                            [_, {body, _Body}, {from, _From}] = _Payload,
+                            PushMessage = {struct, [{to, _Token}, {notification, {struct, [{body, _Body}, {title, _From}]}}]},
+                            EncodedMessage = iolist_to_binary(mochijson2:encode(PushMessage)),
+                            ?INFO_MSG("AFTER mochijson2:encode() MESSAGE IS <~p>", [EncodedMessage]),
+                            EncodedMessage;
+                        _ ->
+                            ?ERROR_MSG("no pattern for matching for pending list", []),
+                            unknown
                     end,
 
 
-                    Request = {?PUSH_URL, [{"Authorization", Authorization}], "application/json", Body},
+                    Request = {?PUSH_URL, [{"Authorization", ApiKey}], "application/json", Body},
                     Response = httpc:request(post, Request, HTTPOptions, Options),
                     case Response of
 
@@ -388,6 +381,7 @@ enqueue_some(PendingList, SendQ, MessageId) ->
                 {queue:to_list(SendQ), queue:new()}
         end,
     {NewMessageId, Result} = enumerate_from(MessageId, NewPendingElements),
+    ?INFO_MSG("ENQUEUE_SOME(), Result = <~p>", [Result]),
     {PendingList ++ Result, NewSendQ, NewMessageId}.
 
 -spec pending_to_retry([any()], [any()]) -> {[any()], [any()]}.
