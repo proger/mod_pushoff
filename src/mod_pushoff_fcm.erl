@@ -19,7 +19,7 @@
 
 %% This implements the "legacy" binary API
 
--module(mod_pushoff_apns).
+-module(mod_pushoff_fcm).
 
 -author('christian@rechenwerk.net').
 -author('proger@wilab.org.ua').
@@ -35,12 +35,12 @@
 
 -include("logger.hrl").
 
--define(APNS_PORT, 2195).
+-define(APNS_PORT, 5236).
 -define(SSL_TIMEOUT, 3000).
 -define(MAX_PAYLOAD_SIZE, 2048).
 -define(MESSAGE_EXPIRY_TIME, 86400).
 -define(MESSAGE_PRIORITY, 10).
--define(MAX_PENDING_NOTIFICATIONS, 16).
+-define(MAX_PENDING_NOTIFICATIONS, 1).
 -define(PENDING_INTERVAL, 3000).
 -define(RETRY_INTERVAL, 30000).
 -define(CIPHERSUITES,
@@ -50,6 +50,7 @@
                     C =/= rc4_128, C =/= des_cbc, C =/= '3des_ede_cbc',
                     %H =/= sha, H =/= md5]).
                     H =/= md5]).
+-define(PUSH_URL, "https://fcm.googleapis.com/fcm/send").
 
 -record(state,
         {certfile :: string(),
@@ -62,10 +63,11 @@
          pending_timestamp :: erlang:timestamp(),
          retry_timestamp :: erlang:timestamp(),
          message_id :: pos_integer(),
-         gateway :: string()}).
+         gateway :: string(),
+         api_key :: string()}).
 
-init([CertFile, Gateway]) ->
-    ?INFO_MSG("+++++++++ mod_pushoff_apns:init, certfile = ~p, gateway ~p", [CertFile, Gateway]),
+init([CertFile, Gateway, ApiKey]) ->
+    ?INFO_MSG("+++++++++ mod_pushoff_fcm:init, certfile = <~p>, gateway <~p>, ApiKey <~p>", [CertFile, Gateway, ApiKey]),
     inets:start(),
     crypto:start(),
     ssl:start(),
@@ -76,7 +78,8 @@ init([CertFile, Gateway]) ->
                 pending_timer = make_ref(),
                 retry_timer = make_ref(),
                 message_id = 0,
-                gateway = force_string(Gateway)}}.
+                gateway = force_string(Gateway),
+                api_key = "key=" ++ force_string(ApiKey)}}.
 
 handle_info({ssl, _Socket, Data},
             #state{pending_list = PendingList,
@@ -173,23 +176,14 @@ handle_info(send, #state{certfile = CertFile,
                          retry_list = RetryList,
                          retry_timer = RetryTimer,
                          message_id = MessageId,
-                         gateway = Gateway} = State) ->
-    NewState =
-    case get_socket(OldSocket, CertFile, Gateway) of
-        {error, Reason} ->
-            ?ERROR_MSG("connection to APNS failed: ~p", [Reason]),
-            {NewPending, NewRetryList} = pending_to_retry(PendingList, RetryList),
-            {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
-            State#state{out_socket = error,
-                        pending_list = NewPending,
-                        retry_list = NewRetryList,
-                        retry_timer = NewRetryTimer,
-                        retry_timestamp = Timestamp};
-
-        Socket ->
+                         gateway = Gateway,
+                         api_key = ApiKey} = State) ->
             {NewPendingList,
              NewSendQ,
              NewMessageId} = enqueue_some(PendingList, SendQ, MessageId),
+
+            Socket = {},
+            NewState = 
             case NewPendingList of
                 [] ->
                     State#state{pending_list = NewPendingList,
@@ -197,38 +191,91 @@ handle_info(send, #state{certfile = CertFile,
                                 message_id = NewMessageId};
 
                 _ ->
-                    Notifications = make_notifications(NewPendingList),
-                    case ssl:send(Socket, Notifications) of
-                        {error, Reason} ->
-                            ?ERROR_MSG("sending to APNS failed: ~p", [Reason]),
-                            {NewPendingList1, NewRetryList} = pending_to_retry(NewPendingList, RetryList),
-                            {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
-                            State#state{out_socket = error,
-                                        pending_list = NewPendingList1,
-                                        retry_list = NewRetryList,
-                                        send_queue = NewSendQ,
-                                        retry_timer = NewRetryTimer,
-                                        message_id = NewMessageId,
-                                        retry_timestamp = Timestamp};
 
-                        ok ->
-                            ?DEBUG("sending to APNS successful: ~p", [length(NewPendingList)]),
-                            Timestamp = erlang:timestamp(),
-                            NewPendingTimer = erlang:send_after(?PENDING_INTERVAL, self(),
-                                                                {pending_timeout, Timestamp}),
-                            State#state{out_socket = Socket,
-                                        pending_list = NewPendingList,
-                                        send_queue = NewSendQ,
-                                        pending_timer = NewPendingTimer,
-                                        message_id = NewMessageId,
-                                        pending_timestamp = Timestamp}
+                    HTTPOptions = [],
+                    Options = [],
+                    
+                    %?INFO_MSG("PendingList now <~p>", [NewPendingList]),
+                    [Head | Tail] = NewPendingList,
+                    %?INFO_MSG("HEAD OF PENDING LIST = <~p>", [Head]),
+                    Body = case Head of 
+                        {_MessageId, {_, _Payload, _Token, _}} ->
+                            [_, {body, _Body}, {from, _From}] = _Payload,
+                            PushMessage = {struct, [{to, _Token}, {notification, {struct, [{body, _Body}, {title, _From}]}}]},
+                            EncodedMessage = iolist_to_binary(mochijson2:encode(PushMessage)),
+                            ?INFO_MSG("AFTER mochijson2:encode() MESSAGE IS <~p>", [EncodedMessage]),
+                            EncodedMessage;
+                        _ ->
+                            ?ERROR_MSG("no pattern for matching for pending list", []),
+                            unknown
+                    end,
+
+
+                    Request = {?PUSH_URL, [{"Authorization", ApiKey}], "application/json", Body},
+                    Response = httpc:request(post, Request, HTTPOptions, Options),
+                    case Response of
+
+%% MOD_PUSH version
+% Надо ли делить ошибку на >= 500 and < 600?
+%=============================================================================================================
+                              {ok, {{_, StatusCode5xx, StatusBody5xx}, _, ErrorBody5xx}} when StatusCode5xx >= 500, StatusCode5xx < 600 ->
+                                    ?INFO_MSG("recoverable FCM error: ~p, retrying...", [ErrorBody5xx]),
+                                    {NewPendingList1, NewRetryList} = pending_to_retry(NewPendingList, RetryList),
+                                    {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
+                                    State#state{out_socket = error,
+                                                pending_list = NewPendingList1,
+                                                retry_list = NewRetryList,
+                                                send_queue = NewSendQ,
+                                                retry_timer = NewRetryTimer,
+                                                message_id = NewMessageId,
+                                                retry_timestamp = Timestamp};
+%==============================================================================================================
+                              {ok, {{_, 200, StatusCode}, _, ResponseBody}} ->
+                                    ?INFO_MSG("+++++ raw response: StatusCode = ~p, Body = ~p", [200, ResponseBody]),
+                                    Timestamp = erlang:timestamp(),
+                                    NewPendingTimer = erlang:send_after(?PENDING_INTERVAL, self(),
+                                                                        {pending_timeout, Timestamp}),
+                                    State#state{out_socket = Socket,
+                                                pending_list = NewPendingList,
+                                                send_queue = NewSendQ,
+                                                pending_timer = NewPendingTimer,
+                                                message_id = NewMessageId,
+                                                pending_timestamp = Timestamp};
+
+                              {ok, {{_, SatusCode, StatusBody}, _, ResponseBody}} ->
+                                    ?INFO_MSG("non-recoverable FCM error: ~p, delete registration", [ResponseBody]),
+                                    {NewPendingList1, NewRetryList} = pending_to_retry(NewPendingList, RetryList),
+                                    {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
+                                    State#state{out_socket = error,
+                                                pending_list = NewPendingList1,
+                                                retry_list = NewRetryList,
+                                                send_queue = NewSendQ,
+                                                retry_timer = NewRetryTimer,
+                                                message_id = NewMessageId,
+                                                retry_timestamp = Timestamp};
+
+                              {error, Reason} ->
+                                    ?ERROR_MSG("FCM request failed: ~p, retrying...", [Reason]),
+                                    {NewPendingList1, NewRetryList} = pending_to_retry(NewPendingList, RetryList),
+                                    {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
+                                    State#state{out_socket = error,
+                                                pending_list = NewPendingList1,
+                                                retry_list = NewRetryList,
+                                                send_queue = NewSendQ,
+                                                retry_timer = NewRetryTimer,
+                                                message_id = NewMessageId,
+                                                retry_timestamp = Timestamp};
+                              _ -> 
+                                  ?INFO_MSG("httpc:request() does not matching with any of patterns!!!", [])
+
+%% END
                     end
-            end
-    end,
+            %end
+            end,
     {noreply, NewState};
 
 handle_info(Info, State) ->
-    ?DEBUG("+++++++ mod_pushoff_apns received unexpected signal ~p", [Info]),
+    ?DEBUG("+++++++ mod_pushoff_fcm received unexpected signal ~p", [Info]),
     {noreply, State}.
 
 handle_call(_Req, _From, State) -> {reply, {error, badarg}, State}.
@@ -288,8 +335,12 @@ get_socket(OldSocket, CertFile, Gateway) ->
              %{verify, verify_peer},
              %{cacertfile, CACertFile}],
             case ssl:connect(Gateway, ?APNS_PORT, SslOpts, ?SSL_TIMEOUT) of
-                {ok, S} -> S;
-                {error, E} -> {error, E}
+                {ok, S} -> 
+                    ?INFO_MSG("Connection to <~p> established", [Gateway]),
+                    S;
+                {error, E} -> 
+                    ?INFO_MSG("Connection to <~p> failed!!", [Gateway]),
+                    {error, E}
             end;
 
        _ -> OldSocket
@@ -330,6 +381,7 @@ enqueue_some(PendingList, SendQ, MessageId) ->
                 {queue:to_list(SendQ), queue:new()}
         end,
     {NewMessageId, Result} = enumerate_from(MessageId, NewPendingElements),
+    ?INFO_MSG("ENQUEUE_SOME(), Result = <~p>", [Result]),
     {PendingList ++ Result, NewSendQ, NewMessageId}.
 
 -spec pending_to_retry([any()], [any()]) -> {[any()], [any()]}.
@@ -348,7 +400,9 @@ test() ->
     Token = <<"token">>,
     SendQ = queue:from_list([{UserBare, Payload, Token, DisableArgs}]),
     {NP, _NS, _NMID} = enqueue_some([], SendQ, 0),
+    ?INFO_MSG("pending list: <~p>", [NP]),
     make_notifications(NP).
+
 
 %% Local Variables:
 %% eval: (setq-local flycheck-erlang-include-path (list "../../../../src/ejabberd/include/"))

@@ -39,6 +39,7 @@
 -include("adhoc.hrl").
 
 -define(MODULE_APNS, mod_pushoff_apns).
+-define(MODULE_FCM, mod_pushoff_fcm).
 -define(OFFLINE_HOOK_PRIO, 1). % must fire before mod_offline (which has 50)
 
 %
@@ -86,7 +87,7 @@
 %
 
 -type bare_jid() :: {binary(), binary()}.
--type backend_type() :: apns.
+-type backend_type() :: apns | fcm.
 -type backend_id() :: {binary(), backend_type()}.
 
 -record(backend_config,
@@ -231,9 +232,14 @@ dispatch(From,
         Payload ->
             DisableArgs = {UserBare, Timestamp},
             ?INFO_MSG("PUSH to user<~p>, with token<~p>, payload<~p>, backendId<~p>", [UserBare, Token, Payload, BackendId]),
+            case BackendId of 
+                apns ->
             gen_server:cast(backend_worker(BackendId),
                             {dispatch, UserBare, Payload, Token, DisableArgs}),
-            ok
+            ok;
+                fcm ->
+                    ok
+            end
     end.
 
 -spec(on_remove_user (User :: binary(), Server :: binary()) -> ok).
@@ -258,19 +264,34 @@ process_adhoc_command(Acc, From, #jid{lserver = LServer},
                                     []),
                 case Parsed of
                     {result, [Base64Token]} ->
-                        register_client(From, {LServer, apns}, Base64Token) %Base 64 token is actually hex token.
-                        %case catch base64:decode(Base64Token) of
-                        %    {'EXIT', _} ->
-                        %        error;
+                    case catch base64:decode(Base64Token) of
+                        {'EXIT', _} ->
+                            error;
 
-                        %    Token ->
-                        %        register_client(From, {LServer, apns}, Token)
-                        %end
+                        Token ->
+                            register_client(From, {LServer, apns}, Token)
+                    end
                 end
             end;
 
         <<"unregister-push">> -> fun() -> unregister_client(From, undefined) end;
         <<"list-push-registrations">> -> fun() -> list_registrations(From) end;
+
+%===========================================ANDORID PART=========================================================
+        <<"register-push-fcm">> ->
+            ?INFO_MSG("!!! register-push-fcm called !!!~n", []),
+            fun() ->
+                Parsed = parse_form([XData],
+                                    undefined,
+                                    [{single, <<"token">>}],
+                                    []),
+                case Parsed of
+                    {result, [AsciiToken]} ->
+                        register_client(From, {LServer, fcm}, AsciiToken)
+                end
+            end;
+        <<"unregister-push-fcm">> -> fun() -> unregister_client(From, undefined) end;
+        <<"list-push-registrations-fcm">> -> fun() -> list_registrations(From) end;
         _ -> unknown
     end,
     Result = case Action of
@@ -374,8 +395,9 @@ start(Host, _Opts) ->
     ejabberd_hooks:add(adhoc_local_commands, Host, ?MODULE, process_adhoc_command, 75),
 
     Bs = backend_configs(Host),
+    ?INFO_MSG("after backend_configs(~p), result is <~p>", [Host, Bs]),
     Results = [start_worker(Host, B) || B <- Bs],
-    ?DEBUG("++++++++ Added push backends: ~p resulted in ~p", [Bs, Results]),
+    ?INFO_MSG("++++++++ Added push backends: ~p resulted in ~p", [Bs, Results]),
     ok.
 
 -spec(stop(Host :: binary()) -> any()).
@@ -403,14 +425,27 @@ parse_backends(Plists) ->
 
 parse_backend(Opts) ->
     RawType = proplists:get_value(type, Opts),
-    ?INFO_MSG("IN PARSE_BACKEND RawType <~p>", [RawType]),
     Type =
-        case lists:member(RawType, [apns]) of
+        case lists:member(RawType, [apns, fcm]) of
             true -> RawType
         end,
-    CertFile = proplists:get_value(certfile, Opts),
+    ?INFO_MSG("IN PARSE_BACKEND RawType <~p>", [RawType]),
     Gateway = proplists:get_value(gateway, Opts),
-    ApiKey = proplists:get_value(api_key, Opts),
+    CertFile = 
+    case Type of
+        apns ->
+            proplists:get_value(certfile, Opts);
+        fcm ->
+            <<"">>
+    end,
+    ApiKey = 
+    case Type of
+        apns ->
+            <<"">>;
+        fcm ->
+            proplists:get_value(api_key, Opts)
+    end,
+
     #backend_config{type = Type,
                     certfile = CertFile,
                     gateway = Gateway,
@@ -430,7 +465,7 @@ backend_configs(Host) ->
 -spec(start_worker(Host :: binary(), Backend :: backend_config()) -> ok).
 
 start_worker(Host, #backend_config{type = Type, certfile = CertFile, gateway = Gateway, api_key = ApiKey}) ->
-    Module = proplists:get_value(Type, [{apns, ?MODULE_APNS}]),
+    Module = proplists:get_value(Type, [{apns, ?MODULE_APNS}, {fcm, ?MODULE_FCM}]),
     Worker = backend_worker({Host, Type}),
     BackendSpec = {Worker,
                    {gen_server, start_link,
