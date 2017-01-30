@@ -64,8 +64,8 @@
          message_id :: pos_integer(),
          gateway :: string()}).
 
-init([CertFile, Gateway]) ->
-    ?INFO_MSG("+++++++++ mod_pushoff_apns:init, certfile = ~p, gateway ~p", [CertFile, Gateway]),
+init([CertFile, Gateway, ApiKey]) ->
+    ?INFO_MSG("+++++++++ mod_pushoff_fcm:init, certfile = <~p>, gateway <~p>, ApiKey <~p>", [CertFile, Gateway, ApiKey]),
     inets:start(),
     crypto:start(),
     ssl:start(),
@@ -76,7 +76,8 @@ init([CertFile, Gateway]) ->
                 pending_timer = make_ref(),
                 retry_timer = make_ref(),
                 message_id = 0,
-                gateway = force_string(Gateway)}}.
+                gateway = force_string(Gateway),
+                api_key = "key=" ++ force_string(ApiKey)}}.
 
 handle_info({ssl, _Socket, Data},
             #state{pending_list = PendingList,

@@ -233,11 +233,16 @@ dispatch(From,
             DisableArgs = {UserBare, Timestamp},
             ?INFO_MSG("PUSH to user<~p>, with token<~p>, payload<~p>, backendId<~p>", [UserBare, Token, Payload, BackendId]),
             case BackendId of 
-                apns ->
-            gen_server:cast(backend_worker(BackendId),
-                            {dispatch, UserBare, Payload, Token, DisableArgs}),
-            ok;
-                fcm ->
+                {_, apns} ->
+                     ?INFO_MSG("CASE apns", []),
+                     gen_server:cast(backend_worker(BackendId),
+                                     {dispatch, UserBare, Payload, Token, DisableArgs}),
+                     ok;
+                 {_, fcm} ->
+                     ?INFO_MSG("CASE fcm", []),
+                     gen_server:cast(backend_worker(BackendId),
+                                     {dispatch, UserBare, Payload, Token, DisableArgs}),
+
                     ok
             end
     end.
@@ -387,7 +392,7 @@ mnesia_set_from_record({Name, Fields}) ->
 -spec(start(Host :: binary(), Opts :: [any()]) -> any()).
 
 start(Host, _Opts) ->
-    ?INFO_MSG("start() called!!!! adding hokks~n", []),
+    ?DEBUG("start() called!!!! adding hokks~n", []),
     mnesia_set_from_record(?RECORD(pushoff_registration)),
 
     ejabberd_hooks:add(remove_user, Host, ?MODULE, on_remove_user, 50),
@@ -395,9 +400,9 @@ start(Host, _Opts) ->
     ejabberd_hooks:add(adhoc_local_commands, Host, ?MODULE, process_adhoc_command, 75),
 
     Bs = backend_configs(Host),
-    ?INFO_MSG("after backend_configs(~p), result is <~p>", [Host, Bs]),
+    ?DEBUG("after backend_configs(~p), result is <~p>", [Host, Bs]),
     Results = [start_worker(Host, B) || B <- Bs],
-    ?INFO_MSG("++++++++ Added push backends: ~p resulted in ~p", [Bs, Results]),
+    ?DEBUG("++++++++ Added push backends: ~p resulted in ~p", [Bs, Results]),
     ok.
 
 -spec(stop(Host :: binary()) -> any()).

@@ -214,10 +214,6 @@ handle_info(send, #state{certfile = CertFile,
                     Request = {?PUSH_URL, [{"Authorization", ApiKey}], "application/json", Body},
                     Response = httpc:request(post, Request, HTTPOptions, Options),
                     case Response of
-
-%% MOD_PUSH version
-% Надо ли делить ошибку на >= 500 and < 600?
-%=============================================================================================================
                               {ok, {{_, StatusCode5xx, StatusBody5xx}, _, ErrorBody5xx}} when StatusCode5xx >= 500, StatusCode5xx < 600 ->
                                     ?INFO_MSG("recoverable FCM error: ~p, retrying...", [ErrorBody5xx]),
                                     {NewPendingList1, NewRetryList} = pending_to_retry(NewPendingList, RetryList),
@@ -268,9 +264,7 @@ handle_info(send, #state{certfile = CertFile,
                               _ -> 
                                   ?INFO_MSG("httpc:request() does not matching with any of patterns!!!", [])
 
-%% END
                     end
-            %end
             end,
     {noreply, NewState};
 
