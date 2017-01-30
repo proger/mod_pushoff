@@ -23,6 +23,7 @@
 
 -author('christian@rechenwerk.net').
 -author('proger@wilab.org.ua').
+-author('dimskii123@gmail.com').
 
 -behaviour(gen_server).
 -compile(export_all).
@@ -35,7 +36,6 @@
 
 -include("logger.hrl").
 
--define(APNS_PORT, 5236).
 -define(SSL_TIMEOUT, 3000).
 -define(MAX_PAYLOAD_SIZE, 2048).
 -define(MESSAGE_EXPIRY_TIME, 86400).
@@ -43,13 +43,6 @@
 -define(MAX_PENDING_NOTIFICATIONS, 1).
 -define(PENDING_INTERVAL, 3000).
 -define(RETRY_INTERVAL, 30000).
--define(CIPHERSUITES,
-        [{K,C,H} || {K,C,H} <- ssl:cipher_suites(erlang),
-                    %K =/= ecdh_ecdsa, K =/= ecdh_rsa, K =/= rsa,
-                    K =/= ecdh_ecdsa, K =/= ecdh_rsa,
-                    C =/= rc4_128, C =/= des_cbc, C =/= '3des_ede_cbc',
-                    %H =/= sha, H =/= md5]).
-                    H =/= md5]).
 -define(PUSH_URL, "https://fcm.googleapis.com/fcm/send").
 
 -record(state,
@@ -169,14 +162,11 @@ handle_info({pending_timeout, Timestamp},
     end,
     {noreply, NewState};
 
-handle_info(send, #state{certfile = CertFile,
-                         out_socket = OldSocket,
-                         pending_list = PendingList,
+handle_info(send, #state{pending_list = PendingList,
                          send_queue = SendQ,
                          retry_list = RetryList,
                          retry_timer = RetryTimer,
                          message_id = MessageId,
-                         gateway = Gateway,
                          api_key = ApiKey} = State) ->
             {NewPendingList,
              NewSendQ,
@@ -196,7 +186,7 @@ handle_info(send, #state{certfile = CertFile,
                     Options = [],
                     
                     %?INFO_MSG("PendingList now <~p>", [NewPendingList]),
-                    [Head | Tail] = NewPendingList,
+                    [Head | _] = NewPendingList,
                     %?INFO_MSG("HEAD OF PENDING LIST = <~p>", [Head]),
                     Body = case Head of 
                         {_MessageId, {_, _Payload, _Token, _}} ->
@@ -214,7 +204,7 @@ handle_info(send, #state{certfile = CertFile,
                     Request = {?PUSH_URL, [{"Authorization", ApiKey}], "application/json", Body},
                     Response = httpc:request(post, Request, HTTPOptions, Options),
                     case Response of
-                              {ok, {{_, StatusCode5xx, StatusBody5xx}, _, ErrorBody5xx}} when StatusCode5xx >= 500, StatusCode5xx < 600 ->
+                              {ok, {{_, StatusCode5xx, _}, _, ErrorBody5xx}} when StatusCode5xx >= 500, StatusCode5xx < 600 ->
                                     ?INFO_MSG("recoverable FCM error: ~p, retrying...", [ErrorBody5xx]),
                                     {NewPendingList1, NewRetryList} = pending_to_retry(NewPendingList, RetryList),
                                     {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
@@ -226,7 +216,7 @@ handle_info(send, #state{certfile = CertFile,
                                                 message_id = NewMessageId,
                                                 retry_timestamp = Timestamp};
 %==============================================================================================================
-                              {ok, {{_, 200, StatusCode}, _, ResponseBody}} ->
+                              {ok, {{_, 200, _}, _, ResponseBody}} ->
                                     ?INFO_MSG("+++++ raw response: StatusCode = ~p, Body = ~p", [200, ResponseBody]),
                                     Timestamp = erlang:timestamp(),
                                     NewPendingTimer = erlang:send_after(?PENDING_INTERVAL, self(),
@@ -238,7 +228,7 @@ handle_info(send, #state{certfile = CertFile,
                                                 message_id = NewMessageId,
                                                 pending_timestamp = Timestamp};
 
-                              {ok, {{_, SatusCode, StatusBody}, _, ResponseBody}} ->
+                              {ok, {{_, _, _}, _, ResponseBody}} ->
                                     ?INFO_MSG("non-recoverable FCM error: ~p, delete registration", [ResponseBody]),
                                     {NewPendingList1, NewRetryList} = pending_to_retry(NewPendingList, RetryList),
                                     {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
@@ -291,54 +281,11 @@ terminate(_Reason, #state{out_socket = OutSocket}) ->
     case OutSocket of
         undefined -> ok;
         error -> ok;
-        _ -> ssl:close(OutSocket)
+        _ -> ok%ssl:close(OutSocket)
     end,
     ok.
 
 code_change(_OldVsn, State, _Extra) -> {ok, State}.
-
-make_notifications(PendingList) ->
-    lists:foldl(
-        fun({MessageId, {_, Payload, Token, _}}, Acc) ->
-            PushMessage = {struct, [{xmpp, {struct, Payload}}]},
-            EncodedMessage = iolist_to_binary(mochijson2:encode(PushMessage)),
-            MessageLength = size(EncodedMessage),
-            TokenLength = size(Token),
-            Frame =
-             <<1:1/unit:8, TokenLength:2/unit:8, Token/binary,
-               2:1/unit:8, MessageLength:2/unit:8, EncodedMessage/binary,
-               3:1/unit:8, 4:2/unit:8, MessageId:4/unit:8>>,
-               %4:8, 4:16/big, ?MESSAGE_EXPIRY_TIME:4/big-unsigned-integer-unit:8,
-               %5:8, 1:16/big, ?MESSAGE_PRIORITY:8>>,
-            FrameLength = size(Frame),
-            <<Acc/binary, <<2:1/unit:8, FrameLength:4/unit:8, Frame/binary>>/binary>>
-        end,
-        <<"">>,
-        PendingList).
-
-get_socket(OldSocket, CertFile, Gateway) ->
-    case OldSocket of
-        _Invalid when OldSocket =:= undefined;
-                     OldSocket =:= error ->
-            SslOpts =
-            [{certfile, CertFile},
-             {versions, ['tlsv1.2']},
-             {ciphers, ?CIPHERSUITES},
-             {reuse_sessions, true},
-             {secure_renegotiate, true}],
-             %{verify, verify_peer},
-             %{cacertfile, CACertFile}],
-            case ssl:connect(Gateway, ?APNS_PORT, SslOpts, ?SSL_TIMEOUT) of
-                {ok, S} -> 
-                    ?INFO_MSG("Connection to <~p> established", [Gateway]),
-                    S;
-                {error, E} -> 
-                    ?INFO_MSG("Connection to <~p> failed!!", [Gateway]),
-                    {error, E}
-            end;
-
-       _ -> OldSocket
-    end.
 
 restart_retry_timer(OldTimer) ->
     erlang:cancel_timer(OldTimer),
@@ -396,9 +343,3 @@ test() ->
     {NP, _NS, _NMID} = enqueue_some([], SendQ, 0),
     ?INFO_MSG("pending list: <~p>", [NP]),
     make_notifications(NP).
-
-
-%% Local Variables:
-%% eval: (setq-local flycheck-erlang-include-path (list "../../../../src/ejabberd/include/"))
-%% eval: (setq-local flycheck-erlang-library-path (list "/usr/local/Cellar/ejabberd/16.09/lib/cache_tab-1.0.4/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/ejabberd-16.09/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/esip-1.0.8/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/ezlib-1.0.1/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/fast_tls-1.0.7/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/fast_xml-1.1.15/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/fast_yaml-1.0.6/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/goldrush-0.1.8/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/iconv-1.0.2/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/jiffy-0.14.7/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/lager-3.2.1/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/luerl-1/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/p1_mysql-1.0.1/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/p1_oauth2-0.6.1/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/p1_pam-1.0.0/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/p1_pgsql-1.0.1/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/p1_utils-1.0.5/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/stringprep-1.0.6/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/stun-1.0.7/ebin"))
-%% End:
