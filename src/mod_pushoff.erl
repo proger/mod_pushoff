@@ -231,20 +231,10 @@ dispatch(From,
         ignore -> ok;
         Payload ->
             DisableArgs = {UserBare, Timestamp},
-            ?INFO_MSG("PUSH to user<~p>, with token<~p>, payload<~p>, backendId<~p>", [UserBare, Token, Payload, BackendId]),
-            case BackendId of 
-                {_, apns} ->
-                     ?INFO_MSG("CASE apns", []),
-                     gen_server:cast(backend_worker(BackendId),
-                                     {dispatch, UserBare, Payload, Token, DisableArgs}),
-                     ok;
-                 {_, fcm} ->
-                     ?INFO_MSG("CASE fcm", []),
-                     gen_server:cast(backend_worker(BackendId),
-                                     {dispatch, UserBare, Payload, Token, DisableArgs}),
-
-                    ok
-            end
+            ?DEBUG("PUSH to user<~p>, with token<~p>, payload<~p>, backendId<~p>", [UserBare, Token, Payload, BackendId]),
+            gen_server:cast(backend_worker(BackendId),
+                             {dispatch, UserBare, Payload, Token, DisableArgs}),
+            ok
     end.
 
 -spec(on_remove_user (User :: binary(), Server :: binary()) -> ok).
