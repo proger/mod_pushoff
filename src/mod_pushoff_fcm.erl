@@ -185,7 +185,17 @@ handle_info(send, #state{pending_list = PendingList,
                     Body = case Head of 
                         {_MessageId, {_, _Payload, _Token, _}} ->
                             [_, {body, _Body}, {from, _From}] = _Payload,
-                            PushMessage = {struct, [{to, _Token}, {data, {struct, [{body, _Body}, {title, _From}]}}]},
+                            PushMessage = {struct, [
+                                                    {to,           _Token},
+                                                    {data,         {struct, [
+                                                                             {body, _Body},
+                                                                             {title, _From}
+                                                                            ]}},
+                                                    {notification, {struct, [
+                                                                             {body, _Body},
+                                                                             {title, _From}
+                                                                            ]}}
+                                                   ]},
                             EncodedMessage = iolist_to_binary(mochijson2:encode(PushMessage)),
                             ?DEBUG("AFTER mochijson2:encode() MESSAGE IS <~p>", [EncodedMessage]),
                             EncodedMessage;
