@@ -62,10 +62,11 @@
          pending_timestamp :: erlang:timestamp(),
          retry_timestamp :: erlang:timestamp(),
          message_id :: pos_integer(),
-         gateway :: string()}).
+         gateway :: string(),
+         api_key :: string()}).
 
 init([CertFile, Gateway, ApiKey]) ->
-    ?INFO_MSG("+++++++++ mod_pushoff_fcm:init, certfile = <~p>, gateway <~p>, ApiKey <~p>", [CertFile, Gateway, ApiKey]),
+    ?INFO_MSG("+++++++++ mod_pushoff_apns:init, certfile = <~p>, gateway <~p>, ApiKey <~p>", [CertFile, Gateway, ApiKey]),
     inets:start(),
     crypto:start(),
     ssl:start(),
@@ -339,19 +340,3 @@ pending_to_retry(PendingList, RetryList) -> {[], RetryList ++ [E || {_, E} <- Pe
 
 force_string(V) when is_binary(V) -> binary_to_list(V);
 force_string(V) -> V.
-
-test() ->
-    UserBare = {<<"jane">>,<<"localhost">>},
-    Timestamp = erlang:timestamp(),
-    DisableArgs = {UserBare, Timestamp},
-    Payload = [{body, <<"sup">>},
-               {from, <<"john@localhost">>}],
-    Token = <<"token">>,
-    SendQ = queue:from_list([{UserBare, Payload, Token, DisableArgs}]),
-    {NP, _NS, _NMID} = enqueue_some([], SendQ, 0),
-    make_notifications(NP).
-
-%% Local Variables:
-%% eval: (setq-local flycheck-erlang-include-path (list "../../../../src/ejabberd/include/"))
-%% eval: (setq-local flycheck-erlang-library-path (list "/usr/local/Cellar/ejabberd/16.09/lib/cache_tab-1.0.4/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/ejabberd-16.09/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/esip-1.0.8/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/ezlib-1.0.1/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/fast_tls-1.0.7/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/fast_xml-1.1.15/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/fast_yaml-1.0.6/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/goldrush-0.1.8/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/iconv-1.0.2/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/jiffy-0.14.7/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/lager-3.2.1/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/luerl-1/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/p1_mysql-1.0.1/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/p1_oauth2-0.6.1/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/p1_pam-1.0.0/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/p1_pgsql-1.0.1/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/p1_utils-1.0.5/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/stringprep-1.0.6/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/stun-1.0.7/ebin"))
-%% End:

@@ -130,10 +130,6 @@ handle_info({ssl, _Socket, Data},
     self() ! send,
     {noreply, NewState#state{pending_timestamp = undefined}};
          
-handle_info({ssl_closed, _SslSocket}, State) ->
-    ?INFO_MSG("connection to APNS closed!", []),
-    {noreply, State#state{out_socket = undefined}};
-
 handle_info({retry, StoredTimestamp},
             #state{send_queue = SendQ,
                    retry_list = RetryList,
@@ -185,15 +181,13 @@ handle_info(send, #state{pending_list = PendingList,
                     HTTPOptions = [],
                     Options = [],
                     
-                    %?INFO_MSG("PendingList now <~p>", [NewPendingList]),
                     [Head | _] = NewPendingList,
-                    %?INFO_MSG("HEAD OF PENDING LIST = <~p>", [Head]),
                     Body = case Head of 
                         {_MessageId, {_, _Payload, _Token, _}} ->
                             [_, {body, _Body}, {from, _From}] = _Payload,
-                            PushMessage = {struct, [{to, _Token}, {notification, {struct, [{body, _Body}, {title, _From}]}}]},
+                            PushMessage = {struct, [{to, _Token}, {data, {struct, [{body, _Body}, {title, _From}]}}]},
                             EncodedMessage = iolist_to_binary(mochijson2:encode(PushMessage)),
-                            ?INFO_MSG("AFTER mochijson2:encode() MESSAGE IS <~p>", [EncodedMessage]),
+                            ?DEBUG("AFTER mochijson2:encode() MESSAGE IS <~p>", [EncodedMessage]),
                             EncodedMessage;
                         _ ->
                             ?ERROR_MSG("no pattern for matching for pending list", []),
@@ -205,7 +199,7 @@ handle_info(send, #state{pending_list = PendingList,
                     Response = httpc:request(post, Request, HTTPOptions, Options),
                     case Response of
                               {ok, {{_, StatusCode5xx, _}, _, ErrorBody5xx}} when StatusCode5xx >= 500, StatusCode5xx < 600 ->
-                                    ?INFO_MSG("recoverable FCM error: ~p, retrying...", [ErrorBody5xx]),
+                                    ?DEBUG("recoverable FCM error: ~p, retrying...", [ErrorBody5xx]),
                                     {NewPendingList1, NewRetryList} = pending_to_retry(NewPendingList, RetryList),
                                     {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
                                     State#state{out_socket = error,
@@ -217,7 +211,7 @@ handle_info(send, #state{pending_list = PendingList,
                                                 retry_timestamp = Timestamp};
 %==============================================================================================================
                               {ok, {{_, 200, _}, _, ResponseBody}} ->
-                                    ?INFO_MSG("+++++ raw response: StatusCode = ~p, Body = ~p", [200, ResponseBody]),
+                                    ?DEBUG("+++++ raw response: StatusCode = ~p, Body = ~p", [200, ResponseBody]),
                                     Timestamp = erlang:timestamp(),
                                     NewPendingTimer = erlang:send_after(?PENDING_INTERVAL, self(),
                                                                         {pending_timeout, Timestamp}),
@@ -229,7 +223,7 @@ handle_info(send, #state{pending_list = PendingList,
                                                 pending_timestamp = Timestamp};
 
                               {ok, {{_, _, _}, _, ResponseBody}} ->
-                                    ?INFO_MSG("non-recoverable FCM error: ~p, delete registration", [ResponseBody]),
+                                    ?DEBUG("non-recoverable FCM error: ~p, delete registration", [ResponseBody]),
                                     {NewPendingList1, NewRetryList} = pending_to_retry(NewPendingList, RetryList),
                                     {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
                                     State#state{out_socket = error,
@@ -252,7 +246,7 @@ handle_info(send, #state{pending_list = PendingList,
                                                 message_id = NewMessageId,
                                                 retry_timestamp = Timestamp};
                               _ -> 
-                                  ?INFO_MSG("httpc:request() does not matching with any of patterns!!!", [])
+                                  ?DEBUG("httpc:request() does not matching with any of patterns!!!", [])
 
                     end
             end,
@@ -322,7 +316,6 @@ enqueue_some(PendingList, SendQ, MessageId) ->
                 {queue:to_list(SendQ), queue:new()}
         end,
     {NewMessageId, Result} = enumerate_from(MessageId, NewPendingElements),
-    ?INFO_MSG("ENQUEUE_SOME(), Result = <~p>", [Result]),
     {PendingList ++ Result, NewSendQ, NewMessageId}.
 
 -spec pending_to_retry([any()], [any()]) -> {[any()], [any()]}.
@@ -331,15 +324,3 @@ pending_to_retry(PendingList, RetryList) -> {[], RetryList ++ [E || {_, E} <- Pe
 
 force_string(V) when is_binary(V) -> binary_to_list(V);
 force_string(V) -> V.
-
-test() ->
-    UserBare = {<<"jane">>,<<"localhost">>},
-    Timestamp = erlang:timestamp(),
-    DisableArgs = {UserBare, Timestamp},
-    Payload = [{body, <<"sup">>},
-               {from, <<"john@localhost">>}],
-    Token = <<"token">>,
-    SendQ = queue:from_list([{UserBare, Payload, Token, DisableArgs}]),
-    {NP, _NS, _NMID} = enqueue_some([], SendQ, 0),
-    ?INFO_MSG("pending list: <~p>", [NP]),
-    make_notifications(NP).

@@ -121,7 +121,7 @@ register_client(#jid{luser = LUser,
                     #pushoff_registration{bare_jid = {LUser, LServer}, _='_'},
                 ExistingReg =
                     mnesia:select(pushoff_registration, [{MatchHeadReg, [], ['$_']}]),
-                    ?INFO_MSG("Existing client: ~p", [ExistingReg]),
+                    ?DEBUG("Existing client: ~p", [ExistingReg]),
                 Registration =
                     case ExistingReg of
                         [] ->
@@ -197,7 +197,6 @@ list_registrations(#jid{luser = LUser, lserver = LServer}) ->
     case mnesia:transaction(F) of
         {aborted, _} -> {error, ?ERR_INTERNAL_SERVER_ERROR};
         {atomic, RegList} -> 
-            io:format("list registrations: ~p~n", [RegList]),
             {registrations, RegList}
     end.
 
@@ -206,7 +205,6 @@ list_registrations(#jid{luser = LUser, lserver = LServer}) ->
 on_offline_message(From, To = #jid{luser = LUser, lserver = LServer}, Stanza) ->
     
     
-    ?INFO_MSG("on_offline_message() called!!!! ~n", []),
     Transaction =
         fun() -> mnesia:read({pushoff_registration, {LUser, LServer}}) end,
     TransactionResult = mnesia:transaction(Transaction),
@@ -252,7 +250,6 @@ process_adhoc_command(Acc, From, #jid{lserver = LServer},
                                      xdata = XData} = Request) ->
     Action = case Command of
         <<"register-push-apns">> ->
-            ?INFO_MSG("!!! register-push-apns called !!!~n", []),
             fun() ->
                 Parsed = parse_form([XData],
                                     undefined,
@@ -273,9 +270,7 @@ process_adhoc_command(Acc, From, #jid{lserver = LServer},
         <<"unregister-push">> -> fun() -> unregister_client(From, undefined) end;
         <<"list-push-registrations">> -> fun() -> list_registrations(From) end;
 
-%===========================================ANDORID PART=========================================================
         <<"register-push-fcm">> ->
-            ?INFO_MSG("!!! register-push-fcm called !!!~n", []),
             fun() ->
                 Parsed = parse_form([XData],
                                     undefined,
@@ -383,7 +378,6 @@ mnesia_set_from_record({Name, Fields}) ->
 -spec(start(Host :: binary(), Opts :: [any()]) -> any()).
 
 start(Host, _Opts) ->
-    ?DEBUG("start() called!!!! adding hokks~n", []),
     mnesia_set_from_record(?RECORD(pushoff_registration)),
 
     ejabberd_hooks:add(remove_user, Host, ?MODULE, on_remove_user, 50),
@@ -391,7 +385,6 @@ start(Host, _Opts) ->
     ejabberd_hooks:add(adhoc_local_commands, Host, ?MODULE, process_adhoc_command, 75),
 
     Bs = backend_configs(Host),
-    ?DEBUG("after backend_configs(~p), result is <~p>", [Host, Bs]),
     Results = [start_worker(Host, B) || B <- Bs],
     ?DEBUG("++++++++ Added push backends: ~p resulted in ~p", [Bs, Results]),
     ok.
@@ -425,7 +418,7 @@ parse_backend(Opts) ->
         case lists:member(RawType, [apns, fcm]) of
             true -> RawType
         end,
-    ?INFO_MSG("IN PARSE_BACKEND RawType <~p>", [RawType]),
+    ?DEBUG("IN PARSE_BACKEND RawType <~p>", [RawType]),
     Gateway = proplists:get_value(gateway, Opts),
     CertFile = 
     case Type of
