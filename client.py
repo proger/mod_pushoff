@@ -96,7 +96,7 @@ def usage():
     sys.exit(1)
 
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.DEBUG,
+    logging.basicConfig(level=logging.WARNING,
                         format='%(levelname)-8s %(message)s')
 
     try:
@@ -117,7 +117,7 @@ if __name__ == '__main__':
     except AttributeError:
         usage()
 
-    xmpp.connect(reattempt=False, use_ssl=False, use_tls=False)
+    xmpp.connect((user.split('@')[-1], 7000), reattempt=False, use_ssl=False, use_tls=False)
     try:
         xmpp.process(block=True, send_close=False)
     except KeyboardInterrupt:

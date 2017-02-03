@@ -121,7 +121,6 @@ register_client(#jid{luser = LUser,
                     #pushoff_registration{bare_jid = {LUser, LServer}, _='_'},
                 ExistingReg =
                     mnesia:select(pushoff_registration, [{MatchHeadReg, [], ['$_']}]),
-                    ?DEBUG("Existing client: ~p", [ExistingReg]),
                 Registration =
                     case ExistingReg of
                         [] ->
@@ -196,19 +195,15 @@ list_registrations(#jid{luser = LUser, lserver = LServer}) ->
     end,
     case mnesia:transaction(F) of
         {aborted, _} -> {error, ?ERR_INTERNAL_SERVER_ERROR};
-        {atomic, RegList} -> 
-            {registrations, RegList}
+        {atomic, RegList} -> {registrations, RegList}
     end.
 
 -spec(on_offline_message(From :: jid(), To :: jid(), Stanza :: xmlelement()) -> ok).
 
 on_offline_message(From, To = #jid{luser = LUser, lserver = LServer}, Stanza) ->
-    
-    
     Transaction =
         fun() -> mnesia:read({pushoff_registration, {LUser, LServer}}) end,
-    TransactionResult = mnesia:transaction(Transaction),
-    case TransactionResult of
+    case mnesia:transaction(Transaction) of
         {atomic, []} ->
             ?DEBUG("+++++ mod_pushoff dispatch: ~p is not_subscribed", [To]),
             ok;
@@ -230,9 +225,8 @@ dispatch(From,
         ignore -> ok;
         Payload ->
             DisableArgs = {UserBare, Timestamp},
-            ?DEBUG("PUSH to user<~p>, with token<~p>, payload<~p>, backendId<~p>", [UserBare, Token, Payload, BackendId]),
             gen_server:cast(backend_worker(BackendId),
-                             {dispatch, UserBare, Payload, Token, DisableArgs}),
+                            {dispatch, UserBare, Payload, Token, DisableArgs}),
             ok
     end.
 
@@ -260,7 +254,6 @@ process_adhoc_command(Acc, From, #jid{lserver = LServer},
                     case catch base64:decode(Base64Token) of
                         {'EXIT', _} ->
                             error;
-
                         Token ->
                             register_client(From, {LServer, apns}, Token)
                     end
@@ -281,8 +274,6 @@ process_adhoc_command(Acc, From, #jid{lserver = LServer},
                         register_client(From, {LServer, fcm}, AsciiToken)
                 end
             end;
-        <<"unregister-push-fcm">> -> fun() -> unregister_client(From, undefined) end;
-        <<"list-push-registrations-fcm">> -> fun() -> list_registrations(From) end;
         _ -> unknown
     end,
     Result = case Action of
@@ -418,7 +409,6 @@ parse_backend(Opts) ->
         case lists:member(RawType, [apns, fcm]) of
             true -> RawType
         end,
-    ?DEBUG("IN PARSE_BACKEND RawType <~p>", [RawType]),
     Gateway = proplists:get_value(gateway, Opts),
     CertFile = 
     case Type of
@@ -456,11 +446,24 @@ backend_configs(Host) ->
 start_worker(Host, #backend_config{type = Type, certfile = CertFile, gateway = Gateway, api_key = ApiKey}) ->
     Module = proplists:get_value(Type, [{apns, ?MODULE_APNS}, {fcm, ?MODULE_FCM}]),
     Worker = backend_worker({Host, Type}),
-    BackendSpec = {Worker,
+    BackendSpec = 
+    case Type of
+        apns ->
+                  {Worker,
                    {gen_server, start_link,
                     [{local, Worker}, Module,
-                     [CertFile, Gateway, ApiKey], []]},
-                   permanent, 1000, worker, [?MODULE]},
+                     [CertFile, Gateway], []]},
+                   permanent, 1000, worker, [?MODULE]};
+        fcm ->
+                  {Worker,
+                   {gen_server, start_link,
+                    [{local, Worker}, Module,
+                     [Gateway, ApiKey], []]},
+                   permanent, 1000, worker, [?MODULE]};
+        _ ->
+                  ungeristered
+    end,
+
     supervisor:start_child(ejabberd_sup, BackendSpec).
 
 -spec(stanza_to_payload(jid(), xmlelement()) -> payload()).

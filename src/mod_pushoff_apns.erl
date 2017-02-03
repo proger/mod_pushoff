@@ -62,11 +62,10 @@
          pending_timestamp :: erlang:timestamp(),
          retry_timestamp :: erlang:timestamp(),
          message_id :: pos_integer(),
-         gateway :: string(),
-         api_key :: string()}).
+         gateway :: string()}).
 
-init([CertFile, Gateway, ApiKey]) ->
-    ?INFO_MSG("+++++++++ mod_pushoff_apns:init, certfile = <~p>, gateway <~p>, ApiKey <~p>", [CertFile, Gateway, ApiKey]),
+init([CertFile, Gateway]) ->
+    ?INFO_MSG("+++++++++ mod_pushoff_apns:init, certfile = ~p, gateway ~p", [CertFile, Gateway]),
     inets:start(),
     crypto:start(),
     ssl:start(),
@@ -77,8 +76,7 @@ init([CertFile, Gateway, ApiKey]) ->
                 pending_timer = make_ref(),
                 retry_timer = make_ref(),
                 message_id = 0,
-                gateway = force_string(Gateway),
-                api_key = "key=" ++ force_string(ApiKey)}}.
+                gateway = force_string(Gateway)}}.
 
 handle_info({ssl, _Socket, Data},
             #state{pending_list = PendingList,
@@ -340,3 +338,14 @@ pending_to_retry(PendingList, RetryList) -> {[], RetryList ++ [E || {_, E} <- Pe
 
 force_string(V) when is_binary(V) -> binary_to_list(V);
 force_string(V) -> V.
+
+test() ->
+    UserBare = {<<"jane">>,<<"localhost">>},
+    Timestamp = erlang:timestamp(),
+    DisableArgs = {UserBare, Timestamp},
+    Payload = [{body, <<"sup">>},
+               {from, <<"john@localhost">>}],
+    Token = <<"token">>,
+    SendQ = queue:from_list([{UserBare, Payload, Token, DisableArgs}]),
+    {NP, _NS, _NMID} = enqueue_some([], SendQ, 0),
+    make_notifications(NP).
