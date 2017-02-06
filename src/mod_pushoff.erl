@@ -457,12 +457,14 @@ start_worker(Host, #backend_config{type = Type, config = TypeConfig}) ->
                   {Worker,
                    {gen_server, start_link,
                     [{local, Worker}, Module,
+                     %% TODO: mb i should send one record like BackendConfig#backend_config.config and parse it in each module
                      [TypeConfig#apns_config.certfile, TypeConfig#apns_config.gateway], []]},
                    permanent, 1000, worker, [?MODULE]};
         fcm ->
                   {Worker,
                    {gen_server, start_link,
                     [{local, Worker}, Module,
+                     %% TODO: mb i should send one record like BackendConfig#backend_config.config and parse it in each module
                      [TypeConfig#fcm_config.gateway, TypeConfig#fcm_config.api_key], []]},
                    permanent, 1000, worker, [?MODULE]}
     end,
