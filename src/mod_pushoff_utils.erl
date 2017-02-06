@@ -20,7 +20,7 @@
 
 %% This implements the "legacy" binary API
 
--module(utils).
+-module(mod_pushoff_utils).
 
 -author('dimskii123@gmail.com').
 

@@ -91,11 +91,20 @@
 -type backend_type() :: apns | fcm.
 -type backend_id() :: {binary(), backend_type()}.
 
+-record(apns_config,
+        {certfile = <<"">> :: binary(),
+         gateway = <<"">> :: binary()}).
+
+-record(fcm_config,
+        {gateway = <<"">> :: binary(),
+         api_key = <<"">> :: binary()}).
+
+-type apns_config() :: #apns_config{}.
+-type fcm_config() :: #fcm_config{}.
+
 -record(backend_config,
         {type :: backend_type(),
-         certfile = <<"">> :: binary(),
-         gateway = <<"">> :: binary(),
-         api_key = <<"">> :: binary()}).
+         config :: apns_config() | fcm_config()}).
 
 %% mnesia table
 -record(pushoff_registration, {bare_jid :: bare_jid(),
@@ -410,25 +419,21 @@ parse_backend(Opts) ->
             true -> RawType
         end,
     Gateway = proplists:get_value(gateway, Opts),
-    CertFile = 
-    case Type of
-        apns ->
-            proplists:get_value(certfile, Opts);
-        fcm ->
-            <<"">>
-    end,
-    ApiKey = 
-    case Type of
-        apns ->
-            <<"">>;
-        fcm ->
-            proplists:get_value(api_key, Opts)
-    end,
+    CertFile = proplists:get_value(certfile, Opts),
+    ApiKey = proplists:get_value(api_key, Opts),
 
     #backend_config{type = Type,
-                    certfile = CertFile,
-                    gateway = Gateway,
-                    api_key = ApiKey}.
+                    config = 
+                        case Type of 
+                            apns ->
+                                #apns_config{certfile = CertFile,
+                                             gateway = Gateway};
+                            fcm ->
+                                #fcm_config{gateway = Gateway,
+                                            api_key = ApiKey}
+                        end
+                   }.
+
 
 
 -spec(backend_worker(backend_id()) -> atom()).
@@ -443,7 +448,7 @@ backend_configs(Host) ->
 
 -spec(start_worker(Host :: binary(), Backend :: backend_config()) -> ok).
 
-start_worker(Host, #backend_config{type = Type, certfile = CertFile, gateway = Gateway, api_key = ApiKey}) ->
+start_worker(Host, #backend_config{type = Type, config = TypeConfig}) ->
     Module = proplists:get_value(Type, [{apns, ?MODULE_APNS}, {fcm, ?MODULE_FCM}]),
     Worker = backend_worker({Host, Type}),
     BackendSpec = 
@@ -452,16 +457,14 @@ start_worker(Host, #backend_config{type = Type, certfile = CertFile, gateway = G
                   {Worker,
                    {gen_server, start_link,
                     [{local, Worker}, Module,
-                     [CertFile, Gateway], []]},
+                     [TypeConfig#apns_config.certfile, TypeConfig#apns_config.gateway], []]},
                    permanent, 1000, worker, [?MODULE]};
         fcm ->
                   {Worker,
                    {gen_server, start_link,
                     [{local, Worker}, Module,
-                     [Gateway, ApiKey], []]},
-                   permanent, 1000, worker, [?MODULE]};
-        _ ->
-                  ungeristered
+                     [TypeConfig#fcm_config.gateway, TypeConfig#fcm_config.api_key], []]},
+                   permanent, 1000, worker, [?MODULE]}
     end,
 
     supervisor:start_child(ejabberd_sup, BackendSpec).

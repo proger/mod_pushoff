@@ -68,8 +68,8 @@ init([Gateway, ApiKey]) ->
                 pending_timer = make_ref(),
                 retry_timer = make_ref(),
                 message_id = 0,
-                gateway = utils:force_string(Gateway),
-                api_key = "key=" ++ utils:force_string(ApiKey)}}.
+                gateway = mod_pushoff_utils:force_string(Gateway),
+                api_key = "key=" ++ mod_pushoff_utils:force_string(ApiKey)}}.
 
 handle_info({retry, StoredTimestamp},
             #state{send_queue = SendQ,
@@ -108,7 +108,7 @@ handle_info(send, #state{pending_list = PendingList,
                          api_key = ApiKey} = State) ->
             {NewPendingList,
              NewSendQ,
-             NewMessageId} = utils:enqueue_some(PendingList, SendQ, MessageId, ?MAX_PENDING_NOTIFICATIONS),
+             NewMessageId} = mod_pushoff_utils:enqueue_some(PendingList, SendQ, MessageId, ?MAX_PENDING_NOTIFICATIONS),
 
             NewState = 
             case NewPendingList of
@@ -125,16 +125,8 @@ handle_info(send, #state{pending_list = PendingList,
                     [Head | _] = NewPendingList,
                     Body = case Head of 
                         {_MessageId, {_, _Payload, _Token, _}} ->
-
-                            %% Typical _Payload from Pidgin and CC client is: 
-                            %% [{id,<<"purpleda9beec7">>},{body,<<"Hello">>},{from,<<"apnst@localhost">>}]
-                            %% but some python scripts send payloads without id, like
-                            %% [{body,<<"Hello">>},{from,<<"apnst@localhost">>}]
-                            %% and this can be reason of error. Maybe I should add some extra pattern like
-                            %% [{body, _Body}, {from, _From}] ?
-
-                            [_, {body, _Body}, {from, _From}] = _Payload,
-
+                            _Body = proplists:get_value(body, _Payload),
+                            _From = proplists:get_value(from, _Payload),
                             PushMessage = {struct, [
                                                     {to,           _Token},
                                                     {data,         {struct, [
