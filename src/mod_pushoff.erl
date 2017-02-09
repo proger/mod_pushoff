@@ -15,7 +15,6 @@
 %%% You should have received a copy of the GNU General Public License along
 %%% with this program; if not, write to the Free Software Foundation, Inc.,
 %%% 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
-%%%
 
 -module(mod_pushoff).
 
@@ -210,34 +209,33 @@ list_registrations(#jid{luser = LUser, lserver = LServer}) ->
 -spec(on_offline_message(From :: jid(), To :: jid(), Stanza :: xmlelement()) -> ok).
 
 on_offline_message(From, To = #jid{luser = LUser, lserver = LServer}, Stanza) ->
-    Transaction =
-        fun() -> mnesia:read({pushoff_registration, {LUser, LServer}}) end,
-    case mnesia:transaction(Transaction) of
-        {atomic, []} ->
-            ?DEBUG("+++++ mod_pushoff dispatch: ~p is not_subscribed", [To]),
-            ok;
-        {atomic, [Reg]} ->
-            dispatch(From, Reg, Stanza),
-            ok;
-        {aborted, Error} ->
-            ?DEBUG("+++++ error in on_offline_message: ~p", [Error]),
-            ok
-    end.
-
--spec(dispatch(From :: jid(), To :: pushoff_registration(), Stanza :: xmlelement()) -> ok).
-
-dispatch(From,
-         #pushoff_registration{bare_jid = UserBare, token = Token, timestamp = Timestamp,
-                               backend_id = BackendId},
-         Stanza) ->
     case stanza_to_payload(From, Stanza) of
         ignore -> ok;
         Payload ->
-            DisableArgs = {UserBare, Timestamp},
-            gen_server:cast(backend_worker(BackendId),
-                            {dispatch, UserBare, Payload, Token, DisableArgs}),
-            ok
+            Transaction =
+                fun() -> mnesia:read({pushoff_registration, {LUser, LServer}}) end,
+            case mnesia:transaction(Transaction) of
+                {atomic, []} ->
+                    ?DEBUG("+++++ mod_pushoff dispatch: ~p is not_subscribed", [To]),
+                    ok;
+                {atomic, [Reg]} ->
+                    dispatch(Reg, Payload),
+                    ok;
+                {aborted, Error} ->
+                    ?DEBUG("+++++ error in on_offline_message: ~p", [Error]),
+                    ok
+            end
     end.
+
+-spec(dispatch(To :: pushoff_registration(), Stanza :: xmlelement()) -> ok).
+
+dispatch(#pushoff_registration{bare_jid = UserBare, token = Token, timestamp = Timestamp,
+                               backend_id = BackendId},
+         Payload) ->
+    DisableArgs = {UserBare, Timestamp},
+    gen_server:cast(backend_worker(BackendId),
+                    {dispatch, UserBare, Payload, Token, DisableArgs}),
+    ok.
 
 -spec(on_remove_user (User :: binary(), Server :: binary()) -> ok).
 
@@ -477,15 +475,21 @@ stanza_to_payload(#jid{luser = FromU, lserver = FromS},
                   #xmlel{name = <<"message">>, attrs = Attrs, children = Children}) ->
     From = iolist_to_binary([FromU, <<"@">> ,FromS]),
     Body = case [CData || #xmlel{name = <<"body">>, children = [{xmlcdata, CData}]} <- Children] of
-               [] -> <<"">>;
+               [] -> ignore;
                [CData|_] when size(CData) >= 1024 ->
                    %% Truncate messages as you can't fit too much data into one push
                    binary_part(CData, 1024);
                [CData|_] -> CData
            end,
-    case [Id || {<<"id">>, Id} <- Attrs] of
-        [] -> [{body, Body}, {from, From}];
-        [Id|_] -> [{id, Id}, {body, Body}, {from, From}]
+    case Body of
+        ignore ->
+            ignore;
+        _ ->
+
+            case [Id || {<<"id">>, Id} <- Attrs] of
+                [] -> [{body, Body}, {from, From}];
+                [Id|_] -> [{id, Id}, {body, Body}, {from, From}]
+            end
     end;
 
 stanza_to_payload(_, _) -> ignore.
