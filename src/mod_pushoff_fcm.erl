@@ -129,21 +129,21 @@ handle_info(send, #state{pending_list = PendingList,
                             _From = proplists:get_value(from, _Payload),
                             PushMessage = {struct, [
                                                     {to,           _Token},
+                                                    {priority,     <<"high">>},
                                                     {data,         {struct, [
                                                                              {body, _Body},
                                                                              {title, _From}
-                                                                            ]}},
-                                                    {notification, {struct, [
-                                                                             {body, _Body},
-                                                                             {title, _From}
-                                                                            ]}}
+                                                                            ]}}%,
+                                                    %{notification, {struct, [
+                                                    %                         {body, _Body},
+                                                    %                         {title, _From}
+                                                    %                        ]}}
                                                    ]},
                             iolist_to_binary(mochijson2:encode(PushMessage));
                         _ ->
                             ?ERROR_MSG("no pattern for matching for pending list", []),
                             unknown
                     end,
-
 
                     Request = {Gateway, [{"Authorization", ApiKey}], "application/json", Body},
                     Response = httpc:request(post, Request, HTTPOptions, Options),

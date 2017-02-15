@@ -227,7 +227,7 @@ on_offline_message(From, To = #jid{luser = LUser, lserver = LServer}, Stanza) ->
             end
     end.
 
--spec(dispatch(To :: pushoff_registration(), Stanza :: xmlelement()) -> ok).
+-spec(dispatch(To :: pushoff_registration(), Payload :: any()) -> ok).
 
 dispatch(#pushoff_registration{bare_jid = UserBare, token = Token, timestamp = Timestamp,
                                backend_id = BackendId},
