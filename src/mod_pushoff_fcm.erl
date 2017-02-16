@@ -140,23 +140,7 @@ case NewPendingList of
                               retry_timestamp = Timestamp};
 %=============================================================================================
             {ok, {{_, 200, _}, _, ResponseBody}} ->
-                  {struct, JsonData} = mochijson2:decode(ResponseBody),
-                  case proplists:get_value(<<"success">>, JsonData) of
-                      1 ->
-                          ok;
-                      0 ->
-                          [{struct, ResultList}] = proplists:get_value(<<"results">>, JsonData),
-                          case proplists:get_value(<<"error">>, ResultList) of
-                              <<"NotRegistered">> ->
-                                  ?ERROR_MSG("FCM error: invalid token, unregistered user", []),
-                                  mod_pushoff:unregister_client(DisableArgs);
-                              <<"InvalidRegistration">> ->
-                                  ?ERROR_MSG("FCM error: invalid registration, unregistered user", []),
-                                  mod_pushoff:unregister_client(DisableArgs);
-                              _ -> other
-                          end
-                  end,
-
+                  parse_responce(ResponseBody, DisableArgs),
                   Timestamp = erlang:timestamp(),
                   NewPendingTimer = erlang:send_after(?PENDING_INTERVAL, self(),
                                                       {pending_timeout, Timestamp}),
@@ -226,25 +210,40 @@ restart_retry_timer(OldTimer) ->
 
 pending_to_retry(PendingList, RetryList) -> {[], RetryList ++ [E || {_, E} <- PendingList]}.
 
-pending_element_to_json(Element) ->
-    case Element of 
-        {_MessageId, {_, _Payload, _Token, _DisableArgs}} ->
-            _Body = proplists:get_value(body, _Payload),
-            _From = proplists:get_value(from, _Payload),
-            PushMessage = {struct, [
-                                    {to,           _Token},
-                                    {priority,     <<"high">>},
-                                    {data,         {struct, [
-                                                             {body, _Body},
-                                                             {title, _From}
-                                                            ]}}%,
-                                    %{notification, {struct, [
-                                    %                         {body, _Body},
-                                    %                         {title, _From}
-                                    %                        ]}}
-                                   ]},
-            {iolist_to_binary(mochijson2:encode(PushMessage)), _DisableArgs};
-        _ ->
-            ?ERROR_MSG("no pattern for matching for pending list", []),
-            unknown
+pending_element_to_json({_MessageId, {_, _Payload, _Token, _DisableArgs}}) ->
+    _Body = proplists:get_value(body, _Payload),
+    _From = proplists:get_value(from, _Payload),
+    PushMessage = {struct, [
+                            {to,           _Token},
+                            {priority,     <<"high">>},
+                            {data,         {struct, [
+                                                     {body, _Body},
+                                                     {title, _From}
+                                                    ]}}%,
+                            %{notification, {struct, [
+                            %                         {body, _Body},
+                            %                         {title, _From}
+                            %                        ]}}
+                           ]},
+    {iolist_to_binary(mochijson2:encode(PushMessage)), _DisableArgs};
+
+pending_element_to_json(_) ->
+    unknown.
+
+parse_responce(ResponseBody, DisableArgs) ->
+    {struct, JsonData} = mochijson2:decode(ResponseBody),
+    case proplists:get_value(<<"success">>, JsonData) of
+        1 ->
+            ok;
+        0 ->
+            [{struct, ResultList}] = proplists:get_value(<<"results">>, JsonData),
+            case proplists:get_value(<<"error">>, ResultList) of
+                <<"NotRegistered">> ->
+                    ?ERROR_MSG("FCM error: invalid token, unregistered user", []),
+                    mod_pushoff:unregister_client(DisableArgs);
+                <<"InvalidRegistration">> ->
+                    ?ERROR_MSG("FCM error: invalid registration, unregistered user", []),
+                    mod_pushoff:unregister_client(DisableArgs);
+                _ -> other
+            end
     end.
