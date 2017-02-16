@@ -40,7 +40,7 @@
 -define(MAX_PAYLOAD_SIZE, 2048).
 -define(MESSAGE_EXPIRY_TIME, 86400).
 -define(MESSAGE_PRIORITY, 10).
--define(MAX_PENDING_NOTIFICATIONS, 1).
+%-define(MAX_PENDING_NOTIFICATIONS, 1).
 -define(RETRY_INTERVAL, 30000).
 -define(PUSH_URL, "https://fcm.googleapis.com/fcm/send").
 
@@ -126,7 +126,11 @@ case mod_pushoff_utils:enqueue_some(SendQ) of
                               retry_timestamp = Timestamp};
 %=============================================================================================
             {ok, {{_, 200, _}, _, ResponseBody}} ->
-                  parse_responce(ResponseBody, DisableArgs),
+                  case parse_responce(ResponseBody, DisableArgs) of
+                      ok -> ok;
+                      _ ->
+                          mod_pushoff:unregister_client(DisableArgs)
+                  end,
                   Timestamp = erlang:timestamp(),
                   %NewPendingTimer = erlang:send_after(?PENDING_INTERVAL, self(),
                   %                                    {pending_timeout, Timestamp}),
@@ -191,22 +195,22 @@ restart_retry_timer(OldTimer) ->
 
 pending_to_retry(Head, RetryList) -> RetryList ++ Head.
 
-pending_element_to_json({_, _Payload, _Token, _DisableArgs}) ->
-    _Body = proplists:get_value(body, _Payload),
-    _From = proplists:get_value(from, _Payload),
+pending_element_to_json({_, Payload, Token, DisableArgs}) ->
+    Body = proplists:get_value(body, Payload),
+    From = proplists:get_value(from, Payload),
     PushMessage = {struct, [
-                            {to,           _Token},
+                            {to,           Token},
                             {priority,     <<"high">>},
                             {data,         {struct, [
-                                                     {body, _Body},
-                                                     {title, _From}
+                                                     {body, Body},
+                                                     {title, From}
                                                     ]}}%,
                             %{notification, {struct, [
-                            %                         {body, _Body},
-                            %                         {title, _From}
+                            %                         {body, Body},
+                            %                         {title, From}
                             %                        ]}}
                            ]},
-    {iolist_to_binary(mochijson2:encode(PushMessage)), _DisableArgs};
+    {iolist_to_binary(mochijson2:encode(PushMessage)), DisableArgs};
 
 pending_element_to_json(_) ->
     unknown.
@@ -220,11 +224,11 @@ parse_responce(ResponseBody, DisableArgs) ->
             [{struct, ResultList}] = proplists:get_value(<<"results">>, JsonData),
             case proplists:get_value(<<"error">>, ResultList) of
                 <<"NotRegistered">> ->
-                    ?ERROR_MSG("FCM error: invalid token, unregistered user", []),
-                    mod_pushoff:unregister_client(DisableArgs);
+                    ?ERROR_MSG("FCM error: NotRegistered, unregistered user", []),
+                    not_registered;
                 <<"InvalidRegistration">> ->
-                    ?ERROR_MSG("FCM error: invalid registration, unregistered user", []),
-                    mod_pushoff:unregister_client(DisableArgs);
+                    ?ERROR_MSG("FCM error: InvalidRegistration, unregistered user", []),
+                    invalid_registreation;
                 _ -> other
             end
     end.
