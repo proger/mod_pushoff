@@ -41,19 +41,16 @@
 -define(MESSAGE_EXPIRY_TIME, 86400).
 -define(MESSAGE_PRIORITY, 10).
 -define(MAX_PENDING_NOTIFICATIONS, 1).
--define(PENDING_INTERVAL, 1).
 -define(RETRY_INTERVAL, 30000).
 -define(PUSH_URL, "https://fcm.googleapis.com/fcm/send").
 
 -record(state,
-        {pending_list :: [{pos_integer(), any()}],
-         send_queue :: queue:queue(any()),
+        {send_queue :: queue:queue(any()),
          retry_list :: [any()],
          pending_timer :: reference(),
          retry_timer :: reference(),
          pending_timestamp :: erlang:timestamp(),
          retry_timestamp :: erlang:timestamp(),
-         message_id :: pos_integer(),
          gateway :: string(),
          api_key :: string()}).
 
@@ -62,12 +59,10 @@ init([Gateway, ApiKey]) ->
     inets:start(),
     crypto:start(),
     ssl:start(),
-    {ok, #state{pending_list = [],
-                send_queue = queue:new(),
+    {ok, #state{send_queue = queue:new(),
                 retry_list = [],
                 pending_timer = make_ref(),
                 retry_timer = make_ref(),
-                message_id = 0,
                 gateway = mod_pushoff_utils:force_string(Gateway),
                 api_key = "key=" ++ mod_pushoff_utils:force_string(ApiKey)}}.
 
@@ -87,90 +82,76 @@ handle_info({retry, StoredTimestamp},
 handle_info({retry, _T1}, #state{retry_timestamp = _T2} = State) ->
     {noreply, State};
 
-handle_info({pending_timeout, Timestamp},
-            #state{pending_timestamp = StoredTimestamp} = State) ->
-    NewState =
-    case Timestamp of
-        StoredTimestamp ->
-            self() ! send,
-            State#state{pending_list = []};
+%handle_info({pending_timeout, Timestamp},
+%            #state{pending_timestamp = StoredTimestamp} = State) ->
+%    NewState =
+%    case Timestamp of
+%        StoredTimestamp ->
+%            self() ! send,
+%            State#state{pending_list = []};
+%
+%        _ -> State
+%    end,
+%    {noreply, NewState};
 
-        _ -> State
-    end,
-    {noreply, NewState};
-
-handle_info(send, #state{pending_list = PendingList,
-                         send_queue = SendQ,
+handle_info(send, #state{send_queue = SendQ,
                          retry_list = RetryList,
                          retry_timer = RetryTimer,
-                         message_id = MessageId,
                          gateway = Gateway,
                          api_key = ApiKey} = State) ->
-{NewPendingList,
- NewSendQ,
- NewMessageId} = mod_pushoff_utils:enqueue_some(PendingList, SendQ, MessageId, ?MAX_PENDING_NOTIFICATIONS),
+%{NewPendingList,
+% NewSendQ,
+% NewMessageId} = mod_pushoff_utils:enqueue_some(PendingList, SendQ, MessageId, ?MAX_PENDING_NOTIFICATIONS),
 
 NewState = 
-case NewPendingList of
-    [] ->
-        State#state{pending_list = NewPendingList,
-                    send_queue = NewSendQ,
-                    message_id = NewMessageId};
-
-    _ ->
-
+case mod_pushoff_utils:enqueue_some(SendQ) of
+    empty ->
+        State#state{send_queue = SendQ};
+    {Head, NewSendQ} ->
         HTTPOptions = [],
         Options = [],
         
-        [Head | _] = NewPendingList,
         {Body, DisableArgs} = pending_element_to_json(Head),
 
         Request = {Gateway, [{"Authorization", ApiKey}], "application/json", Body},
-        Response = httpc:request(post, Request, HTTPOptions, Options),
+        Response = httpc:request(post, Request, HTTPOptions, Options), %https://firebase.google.com/docs/cloud-messaging/http-server-ref
         case Response of
             {ok, {{_, StatusCode5xx, _}, _, ErrorBody5xx}} when StatusCode5xx >= 500, StatusCode5xx < 600 ->
                   ?DEBUG("recoverable FCM error: ~p, retrying...", [ErrorBody5xx]),
-                  {NewPendingList1, NewRetryList} = pending_to_retry(NewPendingList, RetryList),
+                  NewRetryList = pending_to_retry(Head, RetryList),
                   {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
-                  State#state{pending_list = NewPendingList1,
-                              retry_list = NewRetryList,
+                  State#state{retry_list = NewRetryList,
                               send_queue = NewSendQ,
                               retry_timer = NewRetryTimer,
-                              message_id = NewMessageId,
                               retry_timestamp = Timestamp};
 %=============================================================================================
             {ok, {{_, 200, _}, _, ResponseBody}} ->
                   parse_responce(ResponseBody, DisableArgs),
                   Timestamp = erlang:timestamp(),
-                  NewPendingTimer = erlang:send_after(?PENDING_INTERVAL, self(),
-                                                      {pending_timeout, Timestamp}),
-                  State#state{pending_list = NewPendingList,
-                              send_queue = NewSendQ,
-                              pending_timer = NewPendingTimer,
-                              message_id = NewMessageId,
-                              pending_timestamp = Timestamp};
+                  %NewPendingTimer = erlang:send_after(?PENDING_INTERVAL, self(),
+                  %                                    {pending_timeout, Timestamp}),
+                  State#state{send_queue = NewSendQ,
+                              %pending_timer = NewPendingTimer%,
+                              pending_timestamp = Timestamp
+                              };
 
             {ok, {{_, _, _}, _, ResponseBody}} ->
                   
                   ?DEBUG("non-recoverable FCM error: ~p, delete registration", [ResponseBody]),
-                  {NewPendingList1, NewRetryList} = pending_to_retry(NewPendingList, RetryList),
+                  NewRetryList = pending_to_retry(Head, RetryList),
                   {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
-                  State#state{pending_list = NewPendingList1,
-                              retry_list = NewRetryList,
+                  State#state{retry_list = NewRetryList,
                               send_queue = NewSendQ,
                               retry_timer = NewRetryTimer,
-                              message_id = NewMessageId,
                               retry_timestamp = Timestamp};
 
             {error, Reason} ->
                   ?ERROR_MSG("FCM request failed: ~p, retrying...", [Reason]),
-                  {NewPendingList1, NewRetryList} = pending_to_retry(NewPendingList, RetryList),
+                  NewRetryList = pending_to_retry(Head, RetryList),
                   {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
-                  State#state{pending_list = NewPendingList1,
-                              retry_list = NewRetryList,
+                  State#state{retry_list = NewRetryList,
                               send_queue = NewSendQ,
                               retry_timer = NewRetryTimer,
-                              message_id = NewMessageId,
                               retry_timestamp = Timestamp}
         end
 end,
@@ -206,11 +187,11 @@ restart_retry_timer(OldTimer) ->
     NewTimer = erlang:send_after(?RETRY_INTERVAL, self(), {retry, Timestamp}),
     {NewTimer, Timestamp}.
 
--spec pending_to_retry([any()], [any()]) -> {[any()], [any()]}.
+-spec pending_to_retry(any(), [any()]) -> {[any()]}.
 
-pending_to_retry(PendingList, RetryList) -> {[], RetryList ++ [E || {_, E} <- PendingList]}.
+pending_to_retry(Head, RetryList) -> RetryList ++ Head.
 
-pending_element_to_json({_MessageId, {_, _Payload, _Token, _DisableArgs}}) ->
+pending_element_to_json({_, _Payload, _Token, _DisableArgs}) ->
     _Body = proplists:get_value(body, _Payload),
     _From = proplists:get_value(from, _Payload),
     PushMessage = {struct, [

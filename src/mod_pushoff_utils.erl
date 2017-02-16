@@ -26,12 +26,16 @@
 
 -compile(export_all).
 -export([enqueue_some/4,
+         enqueue_some/1,
          force_string/1]).
+
+-include("logger.hrl").
 
 -spec enqueue_some([any()], queue:queue(any()), pos_integer(), pos_integer())
                   -> {[any()], queue:queue(any()), pos_integer()}.
 
 enqueue_some(PendingList, SendQ, MessageId, MaxPendingNotifications) ->
+    ?INFO_MSG("enqueue_some(), PendingList = <~p>, SendQ = <~p>, MessageId = <~p>, MaxPendingNotifications = <~p>", [PendingList, SendQ, MessageId, MaxPendingNotifications]),
     PendingSpace = MaxPendingNotifications - length(PendingList),
     {NewPendingElements, NewSendQ} =
         case queue:len(SendQ) > PendingSpace of
@@ -43,6 +47,16 @@ enqueue_some(PendingList, SendQ, MessageId, MaxPendingNotifications) ->
         end,
     {NewMessageId, Result} = enumerate_from(MessageId, NewPendingElements),
     {PendingList ++ Result, NewSendQ, NewMessageId}.
+
+-spec enqueue_some(queue:queue(any())) -> any().
+
+enqueue_some(SendQ) -> % enqueue one element for fcm module
+    case queue:out(SendQ) of
+        {{value, Head}, NewSendQ} ->
+            {Head, NewSendQ};
+        {empty, _} ->
+            empty
+    end.
 
 -spec enumerate_from(pos_integer(), [any()]) -> [{pos_integer(), any()}].
 
