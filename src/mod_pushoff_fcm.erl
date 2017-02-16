@@ -106,93 +106,94 @@ handle_info(send, #state{pending_list = PendingList,
                          message_id = MessageId,
                          gateway = Gateway,
                          api_key = ApiKey} = State) ->
-            {NewPendingList,
-             NewSendQ,
-             NewMessageId} = mod_pushoff_utils:enqueue_some(PendingList, SendQ, MessageId, ?MAX_PENDING_NOTIFICATIONS),
+{NewPendingList,
+ NewSendQ,
+ NewMessageId} = mod_pushoff_utils:enqueue_some(PendingList, SendQ, MessageId, ?MAX_PENDING_NOTIFICATIONS),
 
-            NewState = 
-            case NewPendingList of
-                [] ->
-                    State#state{pending_list = NewPendingList,
-                                send_queue = NewSendQ,
-                                message_id = NewMessageId};
+NewState = 
+case NewPendingList of
+    [] ->
+        State#state{pending_list = NewPendingList,
+                    send_queue = NewSendQ,
+                    message_id = NewMessageId};
 
-                _ ->
+    _ ->
 
-                    HTTPOptions = [],
-                    Options = [],
-                    
-                    [Head | _] = NewPendingList,
-                    Body = case Head of 
-                        {_MessageId, {_, _Payload, _Token, _}} ->
-                            _Body = proplists:get_value(body, _Payload),
-                            _From = proplists:get_value(from, _Payload),
-                            PushMessage = {struct, [
-                                                    {to,           _Token},
-                                                    {priority,     <<"high">>},
-                                                    {data,         {struct, [
-                                                                             {body, _Body},
-                                                                             {title, _From}
-                                                                            ]}}%,
-                                                    %{notification, {struct, [
-                                                    %                         {body, _Body},
-                                                    %                         {title, _From}
-                                                    %                        ]}}
-                                                   ]},
-                            iolist_to_binary(mochijson2:encode(PushMessage));
-                        _ ->
-                            ?ERROR_MSG("no pattern for matching for pending list", []),
-                            unknown
-                    end,
+        HTTPOptions = [],
+        Options = [],
+        
+        [Head | _] = NewPendingList,
+        Body = case Head of 
+            {_MessageId, {_, _Payload, _Token, _}} ->
+                _Body = proplists:get_value(body, _Payload),
+                _From = proplists:get_value(from, _Payload),
+                PushMessage = {struct, [
+                                        {to,           _Token},
+                                        {priority,     <<"high">>},
+                                        {data,         {struct, [
+                                                                 {body, _Body},
+                                                                 {title, _From}
+                                                                ]}}%,
+                                        %{notification, {struct, [
+                                        %                         {body, _Body},
+                                        %                         {title, _From}
+                                        %                        ]}}
+                                       ]},
+                iolist_to_binary(mochijson2:encode(PushMessage));
+            _ ->
+                ?ERROR_MSG("no pattern for matching for pending list", []),
+                unknown
+        end,
 
-                    Request = {Gateway, [{"Authorization", ApiKey}], "application/json", Body},
-                    Response = httpc:request(post, Request, HTTPOptions, Options),
-                    case Response of
-                              {ok, {{_, StatusCode5xx, _}, _, ErrorBody5xx}} when StatusCode5xx >= 500, StatusCode5xx < 600 ->
-                                    ?DEBUG("recoverable FCM error: ~p, retrying...", [ErrorBody5xx]),
-                                    {NewPendingList1, NewRetryList} = pending_to_retry(NewPendingList, RetryList),
-                                    {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
-                                    State#state{pending_list = NewPendingList1,
-                                                retry_list = NewRetryList,
-                                                send_queue = NewSendQ,
-                                                retry_timer = NewRetryTimer,
-                                                message_id = NewMessageId,
-                                                retry_timestamp = Timestamp};
-%==============================================================================================================
-                              {ok, {{_, 200, _}, _, ResponseBody}} ->
-                                    ?DEBUG("+++++ raw response: StatusCode = ~p, Body = ~p", [200, ResponseBody]),
-                                    Timestamp = erlang:timestamp(),
-                                    NewPendingTimer = erlang:send_after(?PENDING_INTERVAL, self(),
-                                                                        {pending_timeout, Timestamp}),
-                                    State#state{pending_list = NewPendingList,
-                                                send_queue = NewSendQ,
-                                                pending_timer = NewPendingTimer,
-                                                message_id = NewMessageId,
-                                                pending_timestamp = Timestamp};
+        Request = {Gateway, [{"Authorization", ApiKey}], "application/json", Body},
+        Response = httpc:request(post, Request, HTTPOptions, Options),
+        case Response of
+            {ok, {{_, StatusCode5xx, _}, _, ErrorBody5xx}} when StatusCode5xx >= 500, StatusCode5xx < 600 ->
+                  ?DEBUG("recoverable FCM error: ~p, retrying...", [ErrorBody5xx]),
+                  {NewPendingList1, NewRetryList} = pending_to_retry(NewPendingList, RetryList),
+                  {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
+                  State#state{pending_list = NewPendingList1,
+                              retry_list = NewRetryList,
+                              send_queue = NewSendQ,
+                              retry_timer = NewRetryTimer,
+                              message_id = NewMessageId,
+                              retry_timestamp = Timestamp};
+%=============================================================================================
+            {ok, {{_, 200, _}, _, ResponseBody}} ->
+                  ?INFO_MSG("+++++ raw response: StatusCode = ~p, Body = ~p", [200, ResponseBody]),
+                  Timestamp = erlang:timestamp(),
+                  NewPendingTimer = erlang:send_after(?PENDING_INTERVAL, self(),
+                                                      {pending_timeout, Timestamp}),
+                  State#state{pending_list = NewPendingList,
+                              send_queue = NewSendQ,
+                              pending_timer = NewPendingTimer,
+                              message_id = NewMessageId,
+                              pending_timestamp = Timestamp};
 
-                              {ok, {{_, _, _}, _, ResponseBody}} ->
-                                    ?DEBUG("non-recoverable FCM error: ~p, delete registration", [ResponseBody]),
-                                    {NewPendingList1, NewRetryList} = pending_to_retry(NewPendingList, RetryList),
-                                    {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
-                                    State#state{pending_list = NewPendingList1,
-                                                retry_list = NewRetryList,
-                                                send_queue = NewSendQ,
-                                                retry_timer = NewRetryTimer,
-                                                message_id = NewMessageId,
-                                                retry_timestamp = Timestamp};
+            {ok, {{_, _, _}, _, ResponseBody}} ->
+                  
+                  ?DEBUG("non-recoverable FCM error: ~p, delete registration", [ResponseBody]),
+                  {NewPendingList1, NewRetryList} = pending_to_retry(NewPendingList, RetryList),
+                  {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
+                  State#state{pending_list = NewPendingList1,
+                              retry_list = NewRetryList,
+                              send_queue = NewSendQ,
+                              retry_timer = NewRetryTimer,
+                              message_id = NewMessageId,
+                              retry_timestamp = Timestamp};
 
-                              {error, Reason} ->
-                                    ?ERROR_MSG("FCM request failed: ~p, retrying...", [Reason]),
-                                    {NewPendingList1, NewRetryList} = pending_to_retry(NewPendingList, RetryList),
-                                    {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
-                                    State#state{pending_list = NewPendingList1,
-                                                retry_list = NewRetryList,
-                                                send_queue = NewSendQ,
-                                                retry_timer = NewRetryTimer,
-                                                message_id = NewMessageId,
-                                                retry_timestamp = Timestamp}
-                    end
-            end,
+            {error, Reason} ->
+                  ?ERROR_MSG("FCM request failed: ~p, retrying...", [Reason]),
+                  {NewPendingList1, NewRetryList} = pending_to_retry(NewPendingList, RetryList),
+                  {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
+                  State#state{pending_list = NewPendingList1,
+                              retry_list = NewRetryList,
+                              send_queue = NewSendQ,
+                              retry_timer = NewRetryTimer,
+                              message_id = NewMessageId,
+                              retry_timestamp = Timestamp}
+        end
+end,
     {noreply, NewState};
 
 handle_info(Info, State) ->
