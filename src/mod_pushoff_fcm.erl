@@ -37,11 +37,7 @@
 
 -include("logger.hrl").
 
--define(MAX_PAYLOAD_SIZE, 2048).
--define(MESSAGE_EXPIRY_TIME, 86400).
--define(MESSAGE_PRIORITY, 10).
 -define(RETRY_INTERVAL, 30000).
--define(PUSH_URL, "https://fcm.googleapis.com/fcm/send").
 
 -record(state,
         {send_queue :: queue:queue(any()),
@@ -87,59 +83,58 @@ handle_info(send, #state{send_queue = SendQ,
                          gateway = Gateway,
                          api_key = ApiKey} = State) ->
 
-NewState = 
-case mod_pushoff_utils:enqueue_some(SendQ) of
-    empty ->
-        State#state{send_queue = SendQ};
-    {Head, NewSendQ} ->
-        HTTPOptions = [],
-        Options = [],
-        
-        {Body, DisableArgs} = pending_element_to_json(Head),
-
-        Request = {Gateway, [{"Authorization", ApiKey}], "application/json", Body},
-        Response = httpc:request(post, Request, HTTPOptions, Options), %https://firebase.google.com/docs/cloud-messaging/http-server-ref
-        case Response of
-            {ok, {{_, StatusCode5xx, _}, _, ErrorBody5xx}} when StatusCode5xx >= 500, StatusCode5xx < 600 ->
-                  ?DEBUG("recoverable FCM error: ~p, retrying...", [ErrorBody5xx]),
-                  NewRetryList = pending_to_retry(Head, RetryList),
-                  {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
-                  State#state{retry_list = NewRetryList,
-                              send_queue = NewSendQ,
-                              retry_timer = NewRetryTimer,
-                              retry_timestamp = Timestamp};
-%=============================================================================================
-            {ok, {{_, 200, _}, _, ResponseBody}} ->
-                  case parse_responce(ResponseBody) of
-                      ok -> ok;
-                      _ ->
-                          mod_pushoff:unregister_client(DisableArgs)
-                  end,
-                  Timestamp = erlang:timestamp(),
-                  State#state{send_queue = NewSendQ,
-                              pending_timestamp = Timestamp
-                              };
-
-            {ok, {{_, _, _}, _, ResponseBody}} ->
-                  
-                  ?DEBUG("non-recoverable FCM error: ~p, delete registration", [ResponseBody]),
-                  NewRetryList = pending_to_retry(Head, RetryList),
-                  {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
-                  State#state{retry_list = NewRetryList,
-                              send_queue = NewSendQ,
-                              retry_timer = NewRetryTimer,
-                              retry_timestamp = Timestamp};
-
-            {error, Reason} ->
-                  ?ERROR_MSG("FCM request failed: ~p, retrying...", [Reason]),
-                  NewRetryList = pending_to_retry(Head, RetryList),
-                  {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
-                  State#state{retry_list = NewRetryList,
-                              send_queue = NewSendQ,
-                              retry_timer = NewRetryTimer,
-                              retry_timestamp = Timestamp}
-        end
-end,
+    NewState = 
+    case mod_pushoff_utils:enqueue_some(SendQ) of
+        empty ->
+            State#state{send_queue = SendQ};
+        {Head, NewSendQ} ->
+            HTTPOptions = [],
+            Options = [],
+            
+            {Body, DisableArgs} = pending_element_to_json(Head),
+    
+            Request = {Gateway, [{"Authorization", ApiKey}], "application/json", Body},
+            Response = httpc:request(post, Request, HTTPOptions, Options), %https://firebase.google.com/docs/cloud-messaging/http-server-ref
+            case Response of
+                {ok, {{_, StatusCode5xx, _}, _, ErrorBody5xx}} when StatusCode5xx >= 500, StatusCode5xx < 600 ->
+                      ?DEBUG("recoverable FCM error: ~p, retrying...", [ErrorBody5xx]),
+                      NewRetryList = pending_to_retry(Head, RetryList),
+                      {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
+                      State#state{retry_list = NewRetryList,
+                                  send_queue = NewSendQ,
+                                  retry_timer = NewRetryTimer,
+                                  retry_timestamp = Timestamp};
+                {ok, {{_, 200, _}, _, ResponseBody}} ->
+                      case parse_responce(ResponseBody) of
+                          ok -> ok;
+                          _ ->
+                              mod_pushoff:unregister_client(DisableArgs)
+                      end,
+                      Timestamp = erlang:timestamp(),
+                      State#state{send_queue = NewSendQ,
+                                  pending_timestamp = Timestamp
+                                  };
+    
+                {ok, {{_, _, _}, _, ResponseBody}} ->
+                      
+                      ?DEBUG("non-recoverable FCM error: ~p, delete registration", [ResponseBody]),
+                      NewRetryList = pending_to_retry(Head, RetryList),
+                      {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
+                      State#state{retry_list = NewRetryList,
+                                  send_queue = NewSendQ,
+                                  retry_timer = NewRetryTimer,
+                                  retry_timestamp = Timestamp};
+    
+                {error, Reason} ->
+                      ?ERROR_MSG("FCM request failed: ~p, retrying...", [Reason]),
+                      NewRetryList = pending_to_retry(Head, RetryList),
+                      {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
+                      State#state{retry_list = NewRetryList,
+                                  send_queue = NewSendQ,
+                                  retry_timer = NewRetryTimer,
+                                  retry_timestamp = Timestamp}
+            end
+    end,
     {noreply, NewState};
 
 handle_info(Info, State) ->
