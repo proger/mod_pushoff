@@ -258,12 +258,12 @@ process_adhoc_command(Acc, From, #jid{lserver = LServer},
                                     []),
                 case Parsed of
                     {result, [Base64Token]} ->
-                    case catch base64:decode(Base64Token) of
-                        {'EXIT', _} ->
-                            error;
-                        Token ->
-                            register_client(From, {LServer, apns}, Token)
-                    end
+                        case catch base64:decode(Base64Token) of
+                            {'EXIT', _} ->
+                                error;
+                            Token ->
+                                register_client(From, {LServer, apns}, Token)
+                        end
                 end
             end;
 

@@ -180,7 +180,9 @@ pending_element_to_json({_, Payload, Token, DisableArgs}) ->
                             {data,         {struct, [
                                                      {body, Body},
                                                      {title, From}
-                                                    ]}}%,
+                                                    ]}
+                            }%,
+                            %% IF you need notification in android system tray, you should use this "notification" field in json
                             %{notification, {struct, [
                             %                         {body, Body},
                             %                         {title, From}
