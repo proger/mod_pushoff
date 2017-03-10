@@ -40,7 +40,6 @@
 -define(MAX_PAYLOAD_SIZE, 2048).
 -define(MESSAGE_EXPIRY_TIME, 86400).
 -define(MESSAGE_PRIORITY, 10).
-%-define(MAX_PENDING_NOTIFICATIONS, 1).
 -define(RETRY_INTERVAL, 30000).
 -define(PUSH_URL, "https://fcm.googleapis.com/fcm/send").
 
@@ -82,26 +81,11 @@ handle_info({retry, StoredTimestamp},
 handle_info({retry, _T1}, #state{retry_timestamp = _T2} = State) ->
     {noreply, State};
 
-%handle_info({pending_timeout, Timestamp},
-%            #state{pending_timestamp = StoredTimestamp} = State) ->
-%    NewState =
-%    case Timestamp of
-%        StoredTimestamp ->
-%            self() ! send,
-%            State#state{pending_list = []};
-%
-%        _ -> State
-%    end,
-%    {noreply, NewState};
-
 handle_info(send, #state{send_queue = SendQ,
                          retry_list = RetryList,
                          retry_timer = RetryTimer,
                          gateway = Gateway,
                          api_key = ApiKey} = State) ->
-%{NewPendingList,
-% NewSendQ,
-% NewMessageId} = mod_pushoff_utils:enqueue_some(PendingList, SendQ, MessageId, ?MAX_PENDING_NOTIFICATIONS),
 
 NewState = 
 case mod_pushoff_utils:enqueue_some(SendQ) of
@@ -126,16 +110,13 @@ case mod_pushoff_utils:enqueue_some(SendQ) of
                               retry_timestamp = Timestamp};
 %=============================================================================================
             {ok, {{_, 200, _}, _, ResponseBody}} ->
-                  case parse_responce(ResponseBody, DisableArgs) of
+                  case parse_responce(ResponseBody) of
                       ok -> ok;
                       _ ->
                           mod_pushoff:unregister_client(DisableArgs)
                   end,
                   Timestamp = erlang:timestamp(),
-                  %NewPendingTimer = erlang:send_after(?PENDING_INTERVAL, self(),
-                  %                                    {pending_timeout, Timestamp}),
                   State#state{send_queue = NewSendQ,
-                              %pending_timer = NewPendingTimer%,
                               pending_timestamp = Timestamp
                               };
 
@@ -215,7 +196,7 @@ pending_element_to_json({_, Payload, Token, DisableArgs}) ->
 pending_element_to_json(_) ->
     unknown.
 
-parse_responce(ResponseBody, DisableArgs) ->
+parse_responce(ResponseBody) ->
     {struct, JsonData} = mochijson2:decode(ResponseBody),
     case proplists:get_value(<<"success">>, JsonData) of
         1 ->
@@ -228,7 +209,7 @@ parse_responce(ResponseBody, DisableArgs) ->
                     not_registered;
                 <<"InvalidRegistration">> ->
                     ?ERROR_MSG("FCM error: InvalidRegistration, unregistered user", []),
-                    invalid_registreation;
+                    invalid_registration;
                 _ -> other
             end
     end.
