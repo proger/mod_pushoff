@@ -7,7 +7,7 @@ Currently supporting solely [Legacy APNS Binary Provider API](https://developer.
 ## Prerequisites
 
 * Erlang/OTP 19 or higher
-* ejabberd 16.09 or higher
+* ejabberd 16.09 - 16.12
 
 ## Installation
 
@@ -68,6 +68,10 @@ modules:
         # sandbox is for testing
         gateway: "gateway.push.apple.com"
         #gateway: "gateway.sandbox.push.apple.com"
+      -
+        type: fcm
+        gateway: "https://fcm.googleapis.com/fcm/send"
+        api_key: "API_KEY"
 ```
 
 ## Client Applications
@@ -77,6 +81,7 @@ Clients can register for push notifications by sending XEP-0004 adhoc requests.
 These are the available adhoc commands:
 
 * `register-push-apns`: register at an APNS backend
+* `register-push-fcm`: register at an FCM backend
 * `list-push-registrations`: request a list of all registrations of the requesting user
 * `unregister-push`: delete the user's registrations
 

@@ -47,6 +47,19 @@ class Jabber(ClientXMPP):
                                            </x>""" % hextobase64(token))]
                                        })
 
+    def register_push_fcm(self, token):
+        self['xep_0050'].start_command(jid=self.__server,
+                                       node='register-push-fcm',
+                                       session={
+                                           'next': self._command_next,
+                                           'error': self._command_error,
+                                           'id': 'execute',
+                                           'payload': [ET.fromstring("""
+                                           <x xmlns='jabber:x:data' type='submit'>
+                                           <field var='token'> <value>%s</value> </field>
+                                           </x>""" % token)]
+                                       })
+
     def list_push_registrations(self):
         self['xep_0050'].start_command(jid=self.__server,
                                        node='list-push-registrations',

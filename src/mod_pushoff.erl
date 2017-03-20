@@ -15,12 +15,12 @@
 %%% You should have received a copy of the GNU General Public License along
 %%% with this program; if not, write to the Free Software Foundation, Inc.,
 %%% 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
-%%%
 
 -module(mod_pushoff).
 
 -author('christian@rechenwerk.net').
 -author('proger@wilab.org.ua').
+-author('dimskii123@gmail.com').
 
 -behaviour(gen_mod).
 
@@ -39,6 +39,7 @@
 -include("adhoc.hrl").
 
 -define(MODULE_APNS, mod_pushoff_apns).
+-define(MODULE_FCM, mod_pushoff_fcm).
 -define(OFFLINE_HOOK_PRIO, 1). % must fire before mod_offline (which has 50)
 
 %
@@ -86,13 +87,23 @@
 %
 
 -type bare_jid() :: {binary(), binary()}.
--type backend_type() :: apns.
+-type backend_type() :: apns | fcm.
 -type backend_id() :: {binary(), backend_type()}.
+
+-record(apns_config,
+        {certfile = <<"">> :: binary(),
+         gateway = <<"">> :: binary()}).
+
+-record(fcm_config,
+        {gateway = <<"">> :: binary(),
+         api_key = <<"">> :: binary()}).
+
+-type apns_config() :: #apns_config{}.
+-type fcm_config() :: #fcm_config{}.
 
 -record(backend_config,
         {type :: backend_type(),
-         certfile = <<"">> :: binary(),
-         gateway = <<"">> :: binary()}).
+         config :: apns_config() | fcm_config()}).
 
 %% mnesia table
 -record(pushoff_registration, {bare_jid :: bare_jid(),
@@ -198,34 +209,33 @@ list_registrations(#jid{luser = LUser, lserver = LServer}) ->
 -spec(on_offline_message(From :: jid(), To :: jid(), Stanza :: xmlelement()) -> ok).
 
 on_offline_message(From, To = #jid{luser = LUser, lserver = LServer}, Stanza) ->
-    Transaction =
-        fun() -> mnesia:read({pushoff_registration, {LUser, LServer}}) end,
-    case mnesia:transaction(Transaction) of
-        {atomic, []} ->
-            ?DEBUG("+++++ mod_pushoff dispatch: ~p is not_subscribed", [To]),
-            ok;
-        {atomic, [Reg]} ->
-            dispatch(From, Reg, Stanza),
-            ok;
-        {aborted, Error} ->
-            ?DEBUG("+++++ error in on_offline_message: ~p", [Error]),
-            ok
-    end.
-
--spec(dispatch(From :: jid(), To :: pushoff_registration(), Stanza :: xmlelement()) -> ok).
-
-dispatch(From,
-         #pushoff_registration{bare_jid = UserBare, token = Token, timestamp = Timestamp,
-                               backend_id = BackendId},
-         Stanza) ->
     case stanza_to_payload(From, Stanza) of
         ignore -> ok;
         Payload ->
-            DisableArgs = {UserBare, Timestamp},
-            gen_server:cast(backend_worker(BackendId),
-                            {dispatch, UserBare, Payload, Token, DisableArgs}),
-            ok
+            Transaction =
+                fun() -> mnesia:read({pushoff_registration, {LUser, LServer}}) end,
+            case mnesia:transaction(Transaction) of
+                {atomic, []} ->
+                    ?DEBUG("+++++ mod_pushoff dispatch: ~p is not_subscribed", [To]),
+                    ok;
+                {atomic, [Reg]} ->
+                    dispatch(Reg, Payload),
+                    ok;
+                {aborted, Error} ->
+                    ?DEBUG("+++++ error in on_offline_message: ~p", [Error]),
+                    ok
+            end
     end.
+
+-spec(dispatch(To :: pushoff_registration(), Payload :: any()) -> ok).
+
+dispatch(#pushoff_registration{bare_jid = UserBare, token = Token, timestamp = Timestamp,
+                               backend_id = BackendId},
+         Payload) ->
+    DisableArgs = {UserBare, Timestamp},
+    gen_server:cast(backend_worker(BackendId),
+                    {dispatch, UserBare, Payload, Token, DisableArgs}),
+    ok.
 
 -spec(on_remove_user (User :: binary(), Server :: binary()) -> ok).
 
@@ -251,7 +261,6 @@ process_adhoc_command(Acc, From, #jid{lserver = LServer},
                         case catch base64:decode(Base64Token) of
                             {'EXIT', _} ->
                                 error;
-
                             Token ->
                                 register_client(From, {LServer, apns}, Token)
                         end
@@ -260,6 +269,18 @@ process_adhoc_command(Acc, From, #jid{lserver = LServer},
 
         <<"unregister-push">> -> fun() -> unregister_client(From, undefined) end;
         <<"list-push-registrations">> -> fun() -> list_registrations(From) end;
+
+        <<"register-push-fcm">> ->
+            fun() ->
+                Parsed = parse_form([XData],
+                                    undefined,
+                                    [{single, <<"token">>}],
+                                    []),
+                case Parsed of
+                    {result, [AsciiToken]} ->
+                        register_client(From, {LServer, fcm}, AsciiToken)
+                end
+            end;
         _ -> unknown
     end,
     Result = case Action of
@@ -392,15 +413,25 @@ parse_backends(Plists) ->
 parse_backend(Opts) ->
     RawType = proplists:get_value(type, Opts),
     Type =
-        case lists:member(RawType, [apns]) of
+        case lists:member(RawType, [apns, fcm]) of
             true -> RawType
         end,
-    CertFile = proplists:get_value(certfile, Opts),
     Gateway = proplists:get_value(gateway, Opts),
+    CertFile = proplists:get_value(certfile, Opts),
+    ApiKey = proplists:get_value(api_key, Opts),
 
     #backend_config{type = Type,
-                    certfile = CertFile,
-                    gateway = Gateway}.
+                    config = 
+                        case Type of 
+                            apns ->
+                                #apns_config{certfile = CertFile,
+                                             gateway = Gateway};
+                            fcm ->
+                                #fcm_config{gateway = Gateway,
+                                            api_key = ApiKey}
+                        end
+                   }.
+
 
 
 -spec(backend_worker(backend_id()) -> atom()).
@@ -415,14 +446,27 @@ backend_configs(Host) ->
 
 -spec(start_worker(Host :: binary(), Backend :: backend_config()) -> ok).
 
-start_worker(Host, #backend_config{type = Type, certfile = CertFile, gateway = Gateway}) ->
-    Module = proplists:get_value(Type, [{apns, ?MODULE_APNS}]),
+start_worker(Host, #backend_config{type = Type, config = TypeConfig}) ->
+    Module = proplists:get_value(Type, [{apns, ?MODULE_APNS}, {fcm, ?MODULE_FCM}]),
     Worker = backend_worker({Host, Type}),
-    BackendSpec = {Worker,
+    BackendSpec = 
+    case Type of
+        apns ->
+                  {Worker,
                    {gen_server, start_link,
                     [{local, Worker}, Module,
-                     [CertFile, Gateway], []]},
-                   permanent, 1000, worker, [?MODULE]},
+                     %% TODO: mb i should send one record like BackendConfig#backend_config.config and parse it in each module
+                     [TypeConfig#apns_config.certfile, TypeConfig#apns_config.gateway], []]},
+                   permanent, 1000, worker, [?MODULE]};
+        fcm ->
+                  {Worker,
+                   {gen_server, start_link,
+                    [{local, Worker}, Module,
+                     %% TODO: mb i should send one record like BackendConfig#backend_config.config and parse it in each module
+                     [TypeConfig#fcm_config.gateway, TypeConfig#fcm_config.api_key], []]},
+                   permanent, 1000, worker, [?MODULE]}
+    end,
+
     supervisor:start_child(ejabberd_sup, BackendSpec).
 
 -spec(stanza_to_payload(jid(), xmlelement()) -> payload()).
@@ -431,15 +475,21 @@ stanza_to_payload(#jid{luser = FromU, lserver = FromS},
                   #xmlel{name = <<"message">>, attrs = Attrs, children = Children}) ->
     From = iolist_to_binary([FromU, <<"@">> ,FromS]),
     Body = case [CData || #xmlel{name = <<"body">>, children = [{xmlcdata, CData}]} <- Children] of
-               [] -> <<"">>;
+               [] -> ignore;
                [CData|_] when size(CData) >= 1024 ->
                    %% Truncate messages as you can't fit too much data into one push
                    binary_part(CData, 1024);
                [CData|_] -> CData
            end,
-    case [Id || {<<"id">>, Id} <- Attrs] of
-        [] -> [{body, Body}, {from, From}];
-        [Id|_] -> [{id, Id}, {body, Body}, {from, From}]
+    case Body of
+        ignore ->
+            ignore;
+        _ ->
+
+            case [Id || {<<"id">>, Id} <- Attrs] of
+                [] -> [{body, Body}, {from, From}];
+                [Id|_] -> [{id, Id}, {body, Body}, {from, From}]
+            end
     end;
 
 stanza_to_payload(_, _) -> ignore.
@@ -570,8 +620,3 @@ parse_form([XDataForm|T], FormType, RequiredFields, OptionalFields) ->
 health() ->
     Hosts = ejabberd_config:get_myhosts(),
     {[{ets:lookup(hooks, {offline_message_hook, H})} || H <- Hosts]}.
-
-%% Local Variables:
-%% eval: (setq-local flycheck-erlang-include-path (list "../../../../src/ejabberd/include/"))
-%% eval: (setq-local flycheck-erlang-library-path (list "/usr/local/Cellar/ejabberd/16.09/lib/cache_tab-1.0.4/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/ejabberd-16.09/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/esip-1.0.8/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/ezlib-1.0.1/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/fast_tls-1.0.7/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/fast_xml-1.1.15/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/fast_yaml-1.0.6/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/goldrush-0.1.8/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/iconv-1.0.2/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/jiffy-0.14.7/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/lager-3.2.1/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/luerl-1/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/p1_mysql-1.0.1/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/p1_oauth2-0.6.1/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/p1_pam-1.0.0/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/p1_pgsql-1.0.1/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/p1_utils-1.0.5/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/stringprep-1.0.6/ebin" "/usr/local/Cellar/ejabberd/16.09/lib/stun-1.0.7/ebin"))
-%% End:
