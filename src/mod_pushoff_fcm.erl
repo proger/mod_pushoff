@@ -103,10 +103,9 @@ handle_info(send, #state{send_queue = SendQ,
                                   retry_timer = NewRetryTimer,
                                   retry_timestamp = Timestamp};
                 {ok, {{_, 200, _}, _, ResponseBody}} ->
-                      case parse_responce(ResponseBody) of
+                      case parse_response(ResponseBody) of
                           ok -> ok;
-                          _ ->
-                              mod_pushoff:unregister_client(DisableArgs)
+                          _ -> mod_pushoff:unregister_client(DisableArgs)
                       end,
                       Timestamp = erlang:timestamp(),
                       State#state{send_queue = NewSendQ,
@@ -172,33 +171,26 @@ pending_to_retry(Head, RetryList) -> RetryList ++ Head.
 pending_element_to_json({_, Payload, Token, DisableArgs}) ->
     Body = proplists:get_value(body, Payload),
     From = proplists:get_value(from, Payload),
-    PushMessage = {struct, [
-                            {to,           Token},
-                            {priority,     <<"high">>},
-                            {data,         {struct, [
-                                                     {body, Body},
-                                                     {title, From}
-                                                    ]}
-                            }%,
-                            %% IF you need notification in android system tray, you should use this "notification" field in json
-                            %{notification, {struct, [
-                            %                         {body, Body},
-                            %                         {title, From}
-                            %                        ]}}
-                           ]},
-    {iolist_to_binary(mochijson2:encode(PushMessage)), DisableArgs};
+    BF = [{body, Body}, {title, From}],
+    PushMessage = {[{to,           Token},
+                    {priority,     <<"high">>},
+                    {data,         {BF}}
+                    %% If you need notification in android system tray, use:
+                    %%, {notification, {BF}}
+                   ]},
+    {jiffy:encode(PushMessage), DisableArgs};
 
 pending_element_to_json(_) ->
     unknown.
 
-parse_responce(ResponseBody) ->
-    {struct, JsonData} = mochijson2:decode(ResponseBody),
+parse_response(ResponseBody) ->
+    {JsonData} = jiffy:decode(ResponseBody),
     case proplists:get_value(<<"success">>, JsonData) of
         1 ->
             ok;
         0 ->
-            [{struct, ResultList}] = proplists:get_value(<<"results">>, JsonData),
-            case proplists:get_value(<<"error">>, ResultList) of
+            [{Result}] = proplists:get_value(<<"results">>, JsonData),
+            case proplists:get_value(<<"error">>, Result) of
                 <<"NotRegistered">> ->
                     ?ERROR_MSG("FCM error: NotRegistered, unregistered user", []),
                     not_registered;

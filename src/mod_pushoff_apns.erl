@@ -257,8 +257,7 @@ code_change(_OldVsn, State, _Extra) -> {ok, State}.
 make_notifications(PendingList) ->
     lists:foldl(
         fun({MessageId, {_, Payload, Token, _}}, Acc) ->
-            PushMessage = {struct, [{xmpp, {struct, Payload}}]},
-            EncodedMessage = iolist_to_binary(mochijson2:encode(PushMessage)),
+            EncodedMessage = jiffy:encode({[{xmpp, {Payload}}]}),
             MessageLength = size(EncodedMessage),
             TokenLength = size(Token),
             Frame =

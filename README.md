@@ -52,7 +52,7 @@ lager:trace_file("/tmp/mod_pushoff.log", [{module, mod_pushoff_apns}], debug).
 % Tracing (install recon first from https://github.com/ferd/recon):
 code:add_patha("/Users/vladki/src/recon/ebin"),
 recon_trace:calls({mod_pushoff, on_offline_message, '_'}, 100),
-recon_trace:calls({mochijson2, encode, fun(_) -> return_trace() end}, 100).
+recon_trace:calls({jiffy, encode, fun(_) -> return_trace() end}, 100).
 ```
 
 ## Configuration
