@@ -363,15 +363,9 @@ process_adhoc_command(Acc, _From, _To, _Request) ->
 -define(RECORD(X), {X, record_info(fields, X)}).
 
 mnesia_set_from_record({Name, Fields}) ->
-    mnesia:create_table(Name,
-                        [{disc_copies, [node()]},
-                         {type, set},
-                         {attributes, Fields}]),
-
-    case mnesia:table_info(Name, attributes) of
-        Fields -> ok;
-        _ -> mnesia:transform_table(Name, ignore, Fields)
-    end.
+    ejabberd_mnesia:create(?MODULE, Name, [{disc_copies, [node()]},
+                                           {type, set},
+                                           {attributes, Fields}]).
 
 -spec(start(Host :: binary(), Opts :: [any()]) -> any()).
 
