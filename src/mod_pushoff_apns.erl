@@ -17,8 +17,6 @@
 %%% 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 %%%
 
-%% This implements the "legacy" binary API
-
 -module(mod_pushoff_apns).
 
 -author('christian@rechenwerk.net').
