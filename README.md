@@ -7,7 +7,7 @@ Currently supporting solely [Legacy APNS Binary Provider API](https://developer.
 ## Prerequisites
 
 * Erlang/OTP 19 or higher
-* ejabberd 16.09 - 16.12
+* ejabberd 18.01
 
 ## Installation
 

@@ -375,16 +375,15 @@ mnesia_set_from_record({Name, Fields}) ->
 
 -spec(start(Host :: binary(), Opts :: [any()]) -> any()).
 
-start(Host, _Opts) ->
+start(Host, Opts) ->
     mnesia_set_from_record(?RECORD(pushoff_registration)),
 
     ejabberd_hooks:add(remove_user, Host, ?MODULE, on_remove_user, 50),
     ejabberd_hooks:add(offline_message_hook, Host, ?MODULE, on_offline_message, ?OFFLINE_HOOK_PRIO),
     ejabberd_hooks:add(adhoc_local_commands, Host, ?MODULE, process_adhoc_command, 75),
 
-    Bs = backend_configs(Host),
-    Results = [start_worker(Host, B) || B <- Bs],
-    ?DEBUG("++++++++ Added push backends: ~p resulted in ~p", [Bs, Results]),
+    Results = [start_worker(Host, B) || B <- proplists:get_value(backends, Opts)],
+    ?INFO_MSG("++++++++ mod_pushoff:start(~p, ~p): ~p", [Host, Opts, Results]),
     ok.
 
 -spec(stop(Host :: binary()) -> any()).
@@ -439,10 +438,8 @@ parse_backend(Opts) ->
 backend_worker({Host, Type}) -> gen_mod:get_module_proc(Host, Type).
 
 backend_configs(Host) ->
-    BackendOpts = gen_mod:get_module_opt(Host, ?MODULE, backends,
-                                         fun(O) when is_list(O) -> O end, []),
-    parse_backends(BackendOpts).
-
+    gen_mod:get_module_opt(Host, ?MODULE, backends,
+                           fun(O) when is_list(O) -> O end, []).
 
 -spec(start_worker(Host :: binary(), Backend :: backend_config()) -> ok).
 
