@@ -1,4 +1,5 @@
-#!/usr/bin/env python
+#!/usr/bin/env nix-shell
+#! nix-shell -i python -p python python2Packages.sleekxmpp
 import logging
 import sys
 import base64
@@ -91,6 +92,7 @@ class Jabber(ClientXMPP):
 def usage():
     print >>sys.stderr, 'usage: client.py jid password text jid msg'
     print >>sys.stderr, 'usage: client.py jid password register-push-apns token'
+    print >>sys.stderr, 'usage: client.py jid password register-push-fcm token'
     print >>sys.stderr, 'usage: client.py jid password list-push-registrations'
     print >>sys.stderr, 'usage: client.py jid password unregister-push'
     sys.exit(1)

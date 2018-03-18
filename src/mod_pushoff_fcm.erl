@@ -105,7 +105,7 @@ handle_info(send, #state{send_queue = SendQ,
                 {ok, {{_, 200, _}, _, ResponseBody}} ->
                       case parse_response(ResponseBody) of
                           ok -> ok;
-                          _ -> mod_pushoff:unregister_client(DisableArgs)
+                          _ -> mod_pushoff_mnesia:unregister_client(DisableArgs)
                       end,
                       Timestamp = erlang:timestamp(),
                       State#state{send_queue = NewSendQ,

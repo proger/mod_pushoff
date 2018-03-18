@@ -112,12 +112,12 @@ handle_info({ssl, _Socket, Data},
 
                         8 ->
                             ?ERROR_MSG("APNS error: invalid token for ~p ~p", [UserB, Token]),
-                            mod_pushoff:unregister_client(DisableArgs),
+                            mod_pushoff_mnesia:unregister_client(DisableArgs),
                             State#state{pending_list = NewPending};
 
                         S ->
                             ?ERROR_MSG("non-recoverable APNS error: ~p", [S]),
-                            mod_pushoff:unregister_client(DisableArgs),
+                            mod_pushoff_mnesia:unregister_client(DisableArgs),
                             State#state{pending_list = NewPending}
                     end
             end;

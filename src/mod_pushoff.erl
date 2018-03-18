@@ -25,70 +25,23 @@
 -behaviour(gen_mod).
 
 -compile(export_all).
--export([start/2, stop/1, depends/2,
-         mod_opt_type/1,
-         parse_backends/1,
-         on_offline_message/3,
-         on_remove_user/2,
-         process_adhoc_command/4,
-         unregister_client/1,
+-export([start/2, stop/1, depends/2, mod_opt_type/1, parse_backends/1,
+         offline_message/1, adhoc_local_commands/4, remove_user/2,
          health/0]).
 
 -include("logger.hrl").
--include("jlib.hrl").
+-include("xmpp.hrl").
 -include("adhoc.hrl").
+
+-include("mod_pushoff.hrl").
 
 -define(MODULE_APNS, mod_pushoff_apns).
 -define(MODULE_FCM, mod_pushoff_fcm).
 -define(OFFLINE_HOOK_PRIO, 1). % must fire before mod_offline (which has 50)
 
 %
-% xdata-form macros
-%
-
--define(VVALUE(Val),
-(
-    #xmlel{
-        name     = <<"value">>,
-        children = [{xmlcdata, Val}]
-    }
-)).
-
--define(VFIELD(Var, Val),
-(
-    #xmlel{
-        name = <<"field">>,
-        attrs = [{<<"var">>, Var}],
-        children = vvaluel(Val)
-    }
-)).
-
--define(TVFIELD(Type, Var, Vals),
-(
-    #xmlel{
-        name     = <<"field">>,
-        attrs    = [{<<"type">>, Type}, {<<"var">>, Var}],
-        children =
-        lists:foldl(fun(Val, FieldAcc) -> vvaluel(Val) ++ FieldAcc end,
-                    [], Vals)
-    }
-)).
-
--define(HFIELD(Val), ?TVFIELD(<<"hidden">>, <<"FORM_TYPE">>, [Val])).
-
--define(ITEM(Fields),
-(
-    #xmlel{name = <<"item">>,
-           children = Fields}
-)).
-
-%
 % types
 %
-
--type bare_jid() :: {binary(), binary()}.
--type backend_type() :: apns | fcm.
--type backend_id() :: {binary(), backend_type()}.
 
 -record(apns_config,
         {certfile = <<"">> :: binary(),
@@ -105,129 +58,28 @@
         {type :: backend_type(),
          config :: apns_config() | fcm_config()}).
 
-%% mnesia table
--record(pushoff_registration, {bare_jid :: bare_jid(),
-                               token :: binary(),
-                               backend_id :: backend_id(),
-                               timestamp :: erlang:timestamp()}).
-
--type pushoff_registration() :: #pushoff_registration{}.
-
 -type backend_config() :: #backend_config{}.
--type payload_value() :: binary() | integer().
--type payload() :: [{atom() | binary(), payload_value()}].
 
-%%
+%
+% dispatch to workers
+%
 
--spec(register_client(jid(), backend_id(), binary()) -> {registered, ok}).
+-spec(stanza_to_payload(message()) -> [{atom(), any()}]).
 
-register_client(#jid{luser = LUser,
-                     lserver = LServer,
-                     lresource = _LResource}, BackendId, ApnsToken) ->
-    F = fun() ->
-                MatchHeadReg =
-                    #pushoff_registration{bare_jid = {LUser, LServer}, _='_'},
-                ExistingReg =
-                    mnesia:select(pushoff_registration, [{MatchHeadReg, [], ['$_']}]),
-                Registration =
-                    case ExistingReg of
-                        [] ->
-                            #pushoff_registration{bare_jid = {LUser, LServer},
-                                                  token = ApnsToken,
-                                                  backend_id = BackendId,
-                                                  timestamp = erlang:timestamp()};
+stanza_to_payload(#message{id = Id, body = [#text{data=CData}|_], from = From}) ->
+    Plist = [{body, case size(CData) of
+                        S when S >= 1024 ->
+                            %% Truncate messages as you can't fit too much data into one push
+                            binary_part(CData, 1024);
+                        _ -> CData end},
+             {from, jid:encode(From)}],
+    case Id of
+        <<"">> -> Plist;
+        _ -> [{id, Id}|Plist]
+    end;
+stanza_to_payload(_) -> ignore.
 
-                        [OldReg] ->
-                            OldReg#pushoff_registration{token = ApnsToken,
-                                                        backend_id = BackendId,
-                                                        timestamp = erlang:timestamp()}
-                    end,
-                mnesia:write(Registration),
-                ok
-           end,
-    case mnesia:transaction(F) of
-        {aborted, _} -> {error, ?ERR_INTERNAL_SERVER_ERROR};
-        {atomic, error} -> {error, ?ERR_ITEM_NOT_FOUND};
-        {atomic, Result} -> {registered, Result}
-    end. 
-
-
--spec(unregister_client({bare_jid(), erlang:timestamp()}) -> error |
-                                                             {error, xmlelement()} |
-                                                             {unregistered, ok} |
-                                                             {unregistered, [binary()]}).
-
-unregister_client({U, T}) -> unregister_client(U, T).
-
--spec(unregister_client(BareJid :: bare_jid(),
-                        Timestamp :: erlang:timestamp()) -> error |
-                                                            {error, xmlelement()} |
-                                                            {unregistered, ok} |
-                                                            {unregistered, [binary()]}).
-
-unregister_client(#jid{luser = LUser, lserver = LServer}, Ts) ->
-    unregister_client({LUser, LServer}, Ts);
-unregister_client({LUser, LServer}, Timestamp) ->
-    F = fun() ->
-                MatchHead =
-                    #pushoff_registration{bare_jid = {LUser, LServer},
-                                          timestamp = Timestamp,
-                                          _='_'},
-                MatchingReg =
-                    mnesia:select(pushoff_registration, [{MatchHead, [], ['$_']}]),
-                case MatchingReg of
-                    [] -> error;
-
-                    [Reg] ->
-                        ?DEBUG("+++++ deleting registration of user ~p",
-                               [Reg#pushoff_registration.bare_jid]),
-                        mnesia:delete_object(Reg),
-                        ok
-                end
-        end,
-    case mnesia:transaction(F) of
-        {aborted, Reason} ->
-            ?DEBUG("+++++ unregister_client error: ~p", [Reason]),
-            {error, ?ERR_INTERNAL_SERVER_ERROR};
-        {atomic, error} -> error;
-        {atomic, Result} -> {unregistered, Result}
-    end.
-
--spec(list_registrations(jid()) -> {error, xmlelement()} |
-                                   {registrations, [pushoff_registration()]}).
-
-list_registrations(#jid{luser = LUser, lserver = LServer}) ->
-    F = fun() ->
-        MatchHead = #pushoff_registration{bare_jid = {LUser, LServer}, _='_'},
-        mnesia:select(pushoff_registration, [{MatchHead, [], ['$_']}])
-    end,
-    case mnesia:transaction(F) of
-        {aborted, _} -> {error, ?ERR_INTERNAL_SERVER_ERROR};
-        {atomic, RegList} -> {registrations, RegList}
-    end.
-
--spec(on_offline_message(From :: jid(), To :: jid(), Stanza :: xmlelement()) -> ok).
-
-on_offline_message(From, To = #jid{luser = LUser, lserver = LServer}, Stanza) ->
-    case stanza_to_payload(From, Stanza) of
-        ignore -> ok;
-        Payload ->
-            Transaction =
-                fun() -> mnesia:read({pushoff_registration, {LUser, LServer}}) end,
-            case mnesia:transaction(Transaction) of
-                {atomic, []} ->
-                    ?DEBUG("+++++ mod_pushoff dispatch: ~p is not_subscribed", [To]),
-                    ok;
-                {atomic, [Reg]} ->
-                    dispatch(Reg, Payload),
-                    ok;
-                {aborted, Error} ->
-                    ?DEBUG("+++++ error in on_offline_message: ~p", [Error]),
-                    ok
-            end
-    end.
-
--spec(dispatch(To :: pushoff_registration(), Payload :: any()) -> ok).
+-spec(dispatch(pushoff_registration(), [{atom(), any()}]) -> ok).
 
 dispatch(#pushoff_registration{bare_jid = UserBare, token = Token, timestamp = Timestamp,
                                backend_id = BackendId},
@@ -237,155 +89,118 @@ dispatch(#pushoff_registration{bare_jid = UserBare, token = Token, timestamp = T
                     {dispatch, UserBare, Payload, Token, DisableArgs}),
     ok.
 
--spec(on_remove_user (User :: binary(), Server :: binary()) -> ok).
 
-on_remove_user(User, Server) ->
-    unregister_client({User, Server}, undefined).
+%
+% ejabberd hooks
+%
 
--spec(process_adhoc_command(Acc :: any(), From :: jid(),
-                            To :: jid(), Request :: adhoc_request()) -> any()).
+-spec(offline_message({any(), message()}) -> ok).
 
-process_adhoc_command(Acc, From, #jid{lserver = LServer},
-                      #adhoc_request{node = Command,
-                                     action = <<"execute">>,
-                                     xdata = XData} = Request) ->
-    Action = case Command of
-        <<"register-push-apns">> ->
-            fun() ->
-                Parsed = parse_form([XData],
-                                    undefined,
-                                    [{single, <<"token">>}],
-                                    []),
-                case Parsed of
-                    {result, [Base64Token]} ->
-                        case catch base64:decode(Base64Token) of
-                            {'EXIT', _} ->
-                                error;
-                            Token ->
-                                register_client(From, {LServer, apns}, Token)
-                        end
-                end
-            end;
-
-        <<"unregister-push">> -> fun() -> unregister_client(From, undefined) end;
-        <<"list-push-registrations">> -> fun() -> list_registrations(From) end;
-
-        <<"register-push-fcm">> ->
-            fun() ->
-                Parsed = parse_form([XData],
-                                    undefined,
-                                    [{single, <<"token">>}],
-                                    []),
-                case Parsed of
-                    {result, [AsciiToken]} ->
-                        register_client(From, {LServer, fcm}, AsciiToken)
-                end
-            end;
-        _ -> unknown
-    end,
-    Result = case Action of
-        unknown -> unknown;
-        _ ->
-            Host = remove_subdomain(LServer), % why?
-            Access =
-            gen_mod:get_module_opt(Host,
-                                   ?MODULE,
-                                   access_backends,
-                                   fun(A) when is_atom(A) -> A end,
-                                   all),
-            case acl:match_rule(Host, Access, From) of
-                deny -> {error, ?ERR_FORBIDDEN};
-                allow -> Action()
+offline_message({_, #message{to = To} = Stanza}) ->
+    case stanza_to_payload(Stanza) of
+        ignore -> ok;
+        Payload ->
+            case mod_pushoff_mnesia:list_registrations(To) of
+                {registrations, []} ->
+                    ?DEBUG("~p is not_subscribed", [To]),
+                    ok;
+                {registrations, [Reg]} ->
+                    dispatch(Reg, Payload),
+                    ok;
+                {error, _} -> ok
             end
+    end.
+
+
+-spec(remove_user(User :: binary(), Server :: binary()) ->
+             {error, stanza_error()} |
+             {unregistered, [pushoff_registration()]}).
+
+remove_user(User, Server) ->
+    mod_pushoff_mnesia:unregister_client({User, Server}, '_').
+
+
+-spec adhoc_local_commands(Acc :: empty | adhoc_command(),
+                           From :: jid(),
+                           To :: jid(),
+                           Request :: adhoc_command()) ->
+                                  adhoc_command() |
+                                  {error, stanza_error()}.
+
+adhoc_local_commands(Acc, From, To, #adhoc_command{node = Command, action = execute, xdata = XData} = Req) ->
+    Host = To#jid.lserver,
+    Access = gen_mod:get_module_opt(Host, ?MODULE, access_backends,
+                                    fun(A) when is_atom(A) -> A end, all),
+    Result = case acl:match_rule(Host, Access, From) of
+        deny -> {error, xmpp:err_forbidden()};
+        allow -> adhoc_perform_action(Command, From, XData)
     end,
+
     case Result of
         unknown -> Acc;
+        {error, Error} -> {error, Error};
 
         {registered, ok} ->
-            Response =
-            #adhoc_response{
-                status = completed,
-                elements = [#xmlel{name = <<"x">>,
-                                   attrs = [{<<"xmlns">>, ?NS_XDATA},
-                                            {<<"type">>, <<"result">>}],
-                                   children = []}]},
-            adhoc:produce_response(Request, Response);
+            xmpp_util:make_adhoc_response(Req, #adhoc_command{status = completed});
 
-        {unregistered, ok} ->
-            Response =
-            #adhoc_response{status = completed, elements = []},
-            adhoc:produce_response(Request, Response);
+        {unregistered, Regs} ->
+            X = xmpp_util:set_xdata_field(#xdata_field{var = <<"removed-registrations">>,
+                                                       values = [T || #pushoff_registration{token=T} <- Regs]}, #xdata{}),
+            xmpp_util:make_adhoc_response(Req, #adhoc_command{status = completed, xdata = X});
 
-        {unregistered, UnregisteredNodeIds} ->
-            Field =
-            ?TVFIELD(<<"list-multi">>, <<"nodes">>, UnregisteredNodeIds),
-            Response =
-            #adhoc_response{
-                status = completed,
-                elements = [#xmlel{name = <<"x">>,
-                                    attrs = [{<<"xmlns">>, ?NS_XDATA},
-                                             {<<"type">>, <<"result">>}],
-                                    children = [Field]}]},
-            adhoc:produce_response(Request, Response);
-
-        {registrations, []} ->
-            adhoc:produce_response(
-                Request,
-                #adhoc_response{status = completed, elements = []});
-
-        {registrations, RegList} ->
-            Items =
-            lists:foldl(
-                fun(_Reg, ItemsAcc) ->
-                    NameField = [],
-                    NodeField = [],
-                    [?ITEM(NameField ++ NodeField) | ItemsAcc]
-                end,
-                [],
-                RegList),
-            Response =
-            #adhoc_response{
-                status = completed,
-                elements = [#xmlel{name = <<"x">>,
-                                   attrs = [{<<"xmlns">>, ?NS_XDATA},
-                                            {<<"type">>, <<"result">>}],
-                                   children = Items}]},
-            adhoc:produce_response(Request, Response);
-
-        error -> {error, ?ERR_BAD_REQUEST};
-
-        {error, Error} -> {error, Error}
+        {registrations, Regs} ->
+            X = xmpp_util:set_xdata_field(#xdata_field{var = <<"registrations">>,
+                                                       values = [T || #pushoff_registration{token=T} <- Regs]}, #xdata{}),
+            xmpp_util:make_adhoc_response(Req, #adhoc_command{status = completed, xdata = X})
     end;
-
-process_adhoc_command(Acc, _From, _To, _Request) ->
+adhoc_local_commands(Acc, _From, _To, _Request) ->
     Acc.
-     
--define(RECORD(X), {X, record_info(fields, X)}).
 
-mnesia_set_from_record({Name, Fields}) ->
-    ejabberd_mnesia:create(?MODULE, Name, [{disc_copies, [node()]},
-                                           {type, set},
-                                           {attributes, Fields}]).
+
+adhoc_perform_action(<<"register-push-apns">>, #jid{lserver = LServer} = From, XData) ->
+    case xmpp_util:get_xdata_values(<<"token">>, XData) of
+        [Base64Token] ->
+            case catch base64:decode(Base64Token) of
+                {'EXIT', _} -> {error, xmpp:err_bad_request()};
+                Token -> mod_pushoff_mnesia:register_client(From, {LServer, apns}, Token)
+            end;
+        _ -> {error, xmpp:err_bad_request()}
+    end;
+adhoc_perform_action(<<"register-push-fcm">>, #jid{lserver = LServer} = From, XData) ->
+    case xmpp_util:get_xdata_values(<<"token">>, XData) of
+        [AsciiToken] -> mod_pushoff_mnesia:register_client(From, {LServer, fcm}, AsciiToken);
+        _ -> {error, xmpp:err_bad_request()}
+    end;
+adhoc_perform_action(<<"unregister-push">>, From, _) ->
+    mod_pushoff_mnesia:unregister_client(From, undefined);
+adhoc_perform_action(<<"list-push-registrations">>, From, _) ->
+    mod_pushoff_mnesia:list_registrations(From);
+adhoc_perform_action(_, _, _) ->
+    unknown.
+
+%
+% ejabberd gen_mod callbacks and configuration
+%
 
 -spec(start(Host :: binary(), Opts :: [any()]) -> any()).
 
 start(Host, Opts) ->
-    mnesia_set_from_record(?RECORD(pushoff_registration)),
+    mod_pushoff_mnesia:create(),
 
-    ejabberd_hooks:add(remove_user, Host, ?MODULE, on_remove_user, 50),
-    ejabberd_hooks:add(offline_message_hook, Host, ?MODULE, on_offline_message, ?OFFLINE_HOOK_PRIO),
-    ejabberd_hooks:add(adhoc_local_commands, Host, ?MODULE, process_adhoc_command, 75),
+    ejabberd_hooks:add(remove_user, Host, ?MODULE, remove_user, 50),
+    ejabberd_hooks:add(offline_message_hook, Host, ?MODULE, offline_message, ?OFFLINE_HOOK_PRIO),
+    ejabberd_hooks:add(adhoc_local_commands, Host, ?MODULE, adhoc_local_commands, 75),
 
     Results = [start_worker(Host, B) || B <- proplists:get_value(backends, Opts)],
-    ?INFO_MSG("++++++++ mod_pushoff:start(~p, ~p): ~p", [Host, Opts, Results]),
+    ?INFO_MSG("++++++++ mod_pushoff:start(~p, ~p): workers ~p", [Host, Opts, Results]),
     ok.
 
 -spec(stop(Host :: binary()) -> any()).
 
 stop(Host) ->
-    ejabberd_hooks:delete(remove_user, Host, ?MODULE, on_remove_user, 50),
-    ejabberd_hooks:delete(offline_message_hook, Host, ?MODULE, on_offline_message, ?OFFLINE_HOOK_PRIO),
-    ejabberd_hooks:delete(adhoc_local_commands, Host, ?MODULE, process_adhoc_command, 75),
+    ejabberd_hooks:delete(adhoc_local_commands, Host, ?MODULE, adhoc_local_commands, 75),
+    ejabberd_hooks:delete(offline_message_hook, Host, ?MODULE, offline_message, ?OFFLINE_HOOK_PRIO),
+    ejabberd_hooks:delete(remove_user, Host, ?MODULE, remove_user, 50),
 
     [begin
          Worker = backend_worker({Host, Type}),
@@ -413,19 +228,20 @@ parse_backend(Opts) ->
     CertFile = proplists:get_value(certfile, Opts),
     ApiKey = proplists:get_value(api_key, Opts),
 
-    #backend_config{type = Type,
-                    config = 
-                        case Type of 
-                            apns ->
-                                #apns_config{certfile = CertFile,
-                                             gateway = Gateway};
-                            fcm ->
-                                #fcm_config{gateway = Gateway,
-                                            api_key = ApiKey}
-                        end
-                   }.
+    #backend_config{
+       type = Type,
+       config =
+           case Type of
+               apns ->
+                   #apns_config{certfile = CertFile, gateway = Gateway};
+               fcm ->
+                   #fcm_config{gateway = Gateway, api_key = ApiKey}
+           end
+      }.
 
-
+%
+% workers
+%
 
 -spec(backend_worker(backend_id()) -> atom()).
 
@@ -460,154 +276,12 @@ start_worker(Host, #backend_config{type = Type, config = TypeConfig}) ->
 
     supervisor:start_child(ejabberd_sup, BackendSpec).
 
--spec(stanza_to_payload(jid(), xmlelement()) -> payload()).
-
-stanza_to_payload(#jid{luser = FromU, lserver = FromS},
-                  #xmlel{name = <<"message">>, attrs = Attrs, children = Children}) ->
-    From = iolist_to_binary([FromU, <<"@">> ,FromS]),
-    Body = case [CData || #xmlel{name = <<"body">>, children = [{xmlcdata, CData}]} <- Children] of
-               [] -> ignore;
-               [CData|_] when size(CData) >= 1024 ->
-                   %% Truncate messages as you can't fit too much data into one push
-                   binary_part(CData, 1024);
-               [CData|_] -> CData
-           end,
-    case Body of
-        ignore ->
-            ignore;
-        _ ->
-
-            case [Id || {<<"id">>, Id} <- Attrs] of
-                [] -> [{body, Body}, {from, From}];
-                [Id|_] -> [{id, Id}, {body, Body}, {from, From}]
-            end
-    end;
-
-stanza_to_payload(_, _) -> ignore.
-
--spec(remove_subdomain (Hostname :: binary()) -> binary()).
-
-remove_subdomain(Hostname) ->
-    Dots = binary:matches(Hostname, <<".">>),
-    case length(Dots) of
-        NumberDots when NumberDots > 1 ->
-            {Pos, _} = lists:nth(NumberDots - 1, Dots),
-            binary:part(Hostname, {Pos + 1, byte_size(Hostname) - Pos - 1});
-        _ -> Hostname
-    end.
-
-vvaluel(Val) ->
-    case Val of
-        <<>> -> [];
-        _ -> [?VVALUE(Val)]
-    end.
-
--spec(get_xdata_value(FieldName :: binary(),
-                      Fields :: [{binary(), [binary()]}]) -> error |
-                                                             binary()).
-
-get_xdata_value(FieldName, Fields) ->
-    get_xdata_value(FieldName, Fields, undefined).
-
--spec(get_xdata_value(FieldName :: binary(),
-                      Fields :: [{binary(), [binary()]}],
-                      DefaultValue :: any()) -> any()).
-
-get_xdata_value(FieldName, Fields, DefaultValue) ->
-    case proplists:get_value(FieldName, Fields, [DefaultValue]) of
-        [Value] -> Value;
-        _ -> error
-    end.
-
--spec(get_xdata_values(FieldName :: binary(),
-                       Fields :: [{binary(), [binary()]}]) -> [binary()]).
-
-get_xdata_values(FieldName, Fields) ->
-    get_xdata_values(FieldName, Fields, []).
-
--spec(get_xdata_values(FieldName :: binary(),
-                       Fields :: [{binary(), [binary()]}],
-                       DefaultValue :: any())
-      -> any()).
-
-get_xdata_values(FieldName, Fields, DefaultValue) ->
-    proplists:get_value(FieldName, Fields, DefaultValue).
-    
--spec(parse_form(
-        [false | xmlelement()],
-        FormType :: binary(),
-        RequiredFields :: [{multi, binary()} | {single, binary()} |
-                           {{multi, binary()}, fun((binary()) -> any())} |
-                           {{single, binary()}, fun((binary()) -> any())}],
-        OptionalFields :: [{multi, binary()} | {single, binary()} |
-                           {{multi, binary()}, fun((binary()) -> any())} |
-                           {{single, binary()}, fun((binary()) -> any())}])
-    -> not_found | error | {result, [any()]}).
-
-parse_form([], _FormType, _RequiredFields, _OptionalFields) ->
-    not_found;
-
-parse_form([false|T], FormType, RequiredFields, OptionalFields) ->
-    parse_form(T, FormType, RequiredFields, OptionalFields);
-
-parse_form([XDataForm|T], FormType, RequiredFields, OptionalFields) ->
-    case jlib:parse_xdata_submit(XDataForm) of
-        invalid -> parse_form(T, FormType, RequiredFields, OptionalFields);
-        Fields ->
-            case get_xdata_value(<<"FORM_TYPE">>, Fields) of
-                FormType ->
-                    GetValues =
-                    fun
-                        ({multi, Key}) -> get_xdata_values(Key, Fields);
-                        ({single, Key}) -> get_xdata_value(Key, Fields);
-                        ({KeyTuple, Convert}) ->
-                            case KeyTuple of
-                                {multi, Key} ->
-                                    Values = get_xdata_values(Key, Fields),
-                                    Converted = lists:foldl(
-                                        fun
-                                        (_, error) -> error;
-                                        (undefined, Acc) -> [undefined|Acc];
-                                        (B, Acc) ->
-                                            try [Convert(B)|Acc]
-                                            catch error:badarg -> error
-                                            end
-                                        end,
-                                        [],
-                                        Values),
-                                    lists:reverse(Converted);
-
-                                {single, Key} ->
-                                    case get_xdata_value(Key, Fields) of
-                                        error -> error;
-                                        undefined -> undefined;
-                                        Value ->
-                                           try Convert(Value)
-                                           catch error:badarg -> error
-                                           end
-                                    end
-                            end
-                    end,
-                    RequiredValues = lists:map(GetValues, RequiredFields),
-                    OptionalValues = lists:map(GetValues, OptionalFields),
-                    RequiredOk =
-                    lists:all(
-                        fun(V) ->
-                            (V =/= undefined) and (V =/= []) and (V =/= error)
-                        end,
-                        RequiredValues),
-                    OptionalOk =
-                    lists:all(fun(V) -> V =/= error end, OptionalValues),
-                    case RequiredOk and OptionalOk of
-                        false -> error;
-                        true ->
-                            {result, RequiredValues ++ OptionalValues}
-                    end;
-
-                _ -> parse_form(T, FormType, RequiredFields, OptionalFields)
-            end
-    end.
+%
+% operations
+%
 
 health() ->
     Hosts = ejabberd_config:get_myhosts(),
-    {[{ets:lookup(hooks, {offline_message_hook, H})} || H <- Hosts]}.
+    [{offline_message_hook, [ets:lookup(hooks, {offline_message_hook, H}) || H <- Hosts]},
+     {adhoc_local_commands, [ets:lookup(hooks, {adhoc_local_commands, H}) || H <- Hosts]},
+     {mnesia, mod_pushoff_mnesia:health()}].
