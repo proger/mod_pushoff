@@ -185,11 +185,13 @@ adhoc_perform_action(_, _, _) ->
 -spec(start(Host :: binary(), Opts :: [any()]) -> any()).
 
 start(Host, Opts) ->
+    ?DEBUG("mod_pushoff:start(~p, ~p)", [Host, Opts]),
+
     mod_pushoff_mnesia:create(),
 
-    ejabberd_hooks:add(remove_user, Host, ?MODULE, remove_user, 50),
-    ejabberd_hooks:add(offline_message_hook, Host, ?MODULE, offline_message, ?OFFLINE_HOOK_PRIO),
-    ejabberd_hooks:add(adhoc_local_commands, Host, ?MODULE, adhoc_local_commands, 75),
+    ok = ejabberd_hooks:add(remove_user, Host, ?MODULE, remove_user, 50),
+    ok = ejabberd_hooks:add(offline_message_hook, Host, ?MODULE, offline_message, ?OFFLINE_HOOK_PRIO),
+    ok = ejabberd_hooks:add(adhoc_local_commands, Host, ?MODULE, adhoc_local_commands, 75),
 
     Results = [start_worker(Host, B) || B <- proplists:get_value(backends, Opts)],
     ?INFO_MSG("++++++++ mod_pushoff:start(~p, ~p): workers ~p", [Host, Opts, Results]),
@@ -198,9 +200,9 @@ start(Host, Opts) ->
 -spec(stop(Host :: binary()) -> any()).
 
 stop(Host) ->
-    ejabberd_hooks:delete(adhoc_local_commands, Host, ?MODULE, adhoc_local_commands, 75),
-    ejabberd_hooks:delete(offline_message_hook, Host, ?MODULE, offline_message, ?OFFLINE_HOOK_PRIO),
-    ejabberd_hooks:delete(remove_user, Host, ?MODULE, remove_user, 50),
+    ok = ejabberd_hooks:delete(adhoc_local_commands, Host, ?MODULE, adhoc_local_commands, 75),
+    ok = ejabberd_hooks:delete(offline_message_hook, Host, ?MODULE, offline_message, ?OFFLINE_HOOK_PRIO),
+    ok = ejabberd_hooks:delete(remove_user, Host, ?MODULE, remove_user, 50),
 
     [begin
          Worker = backend_worker({Host, Type}),
