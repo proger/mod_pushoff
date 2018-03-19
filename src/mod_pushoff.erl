@@ -185,7 +185,7 @@ adhoc_perform_action(_, _, _) ->
 -spec(start(Host :: binary(), Opts :: [any()]) -> any()).
 
 start(Host, Opts) ->
-    ?DEBUG("mod_pushoff:start(~p, ~p)", [Host, Opts]),
+    ?DEBUG("mod_pushoff:start(~p, ~p), pid=~p", [Host, Opts, self()]),
 
     mod_pushoff_mnesia:create(),
 
@@ -200,14 +200,15 @@ start(Host, Opts) ->
 -spec(stop(Host :: binary()) -> any()).
 
 stop(Host) ->
+    ?DEBUG("mod_pushoff:stop(~p), pid=~p", [Host, self()]),
     ok = ejabberd_hooks:delete(adhoc_local_commands, Host, ?MODULE, adhoc_local_commands, 75),
     ok = ejabberd_hooks:delete(offline_message_hook, Host, ?MODULE, offline_message, ?OFFLINE_HOOK_PRIO),
     ok = ejabberd_hooks:delete(remove_user, Host, ?MODULE, remove_user, 50),
 
     [begin
          Worker = backend_worker({Host, Type}),
-         supervisor:terminate_child(ejabberd_sup, Worker),
-         supervisor:delete_child(ejabberd_sup, Worker)
+         supervisor:terminate_child(ejabberd_gen_mod_sup, Worker),
+         supervisor:delete_child(ejabberd_gen_mod_sup, Worker)
      end || #backend_config{type=Type} <- backend_configs(Host)],
     ok.
 
@@ -276,7 +277,7 @@ start_worker(Host, #backend_config{type = Type, config = TypeConfig}) ->
                    permanent, 1000, worker, [?MODULE]}
     end,
 
-    supervisor:start_child(ejabberd_sup, BackendSpec).
+    supervisor:start_child(ejabberd_gen_mod_sup, BackendSpec).
 
 %
 % operations
