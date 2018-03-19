@@ -94,7 +94,7 @@ dispatch(#pushoff_registration{bare_jid = UserBare, token = Token, timestamp = T
 % ejabberd hooks
 %
 
--spec(offline_message({any(), message()}) -> ok).
+-spec(offline_message({atom(), message()}) -> {atom(), message()}).
 
 offline_message({_, #message{to = To} = Stanza} = Acc) ->
     case stanza_to_payload(Stanza) of
