@@ -96,18 +96,18 @@ dispatch(#pushoff_registration{bare_jid = UserBare, token = Token, timestamp = T
 
 -spec(offline_message({any(), message()}) -> ok).
 
-offline_message({_, #message{to = To} = Stanza}) ->
+offline_message({_, #message{to = To} = Stanza} = Acc) ->
     case stanza_to_payload(Stanza) of
         ignore -> ok;
         Payload ->
             case mod_pushoff_mnesia:list_registrations(To) of
                 {registrations, []} ->
                     ?DEBUG("~p is not_subscribed", [To]),
-                    ok;
+                    Acc;
                 {registrations, [Reg]} ->
                     dispatch(Reg, Payload),
-                    ok;
-                {error, _} -> ok
+                    Acc;
+                {error, _} -> Acc
             end
     end.
 
