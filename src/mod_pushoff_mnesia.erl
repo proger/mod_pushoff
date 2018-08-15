@@ -2,7 +2,7 @@
 
 -author('proger@wilab.org.ua').
 
--export([create/0, health/0, register_client/3, unregister_client/2, list_registrations/1]).
+-export([create/0, health/0, register_client/3, unregister_client/1, unregister_client/2, list_registrations/1]).
 
 -include("logger.hrl").
 -include("xmpp.hrl").
@@ -61,6 +61,11 @@ register_client(Jid, BackendId, Token) ->
             {registered, ok}
     end.
 
+-spec(unregister_client({bare_jid() | jid(), erlang:timestamp() | '_'}) ->
+             {error, stanza_error()} |
+             {unregistered, [pushoff_registration()]}).
+
+unregister_client({Jid, Timestamp} = _DisableArgs) -> unregister_client(Jid, Timestamp).
 
 -spec(unregister_client(bare_jid() | jid(), erlang:timestamp() | '_') ->
              {error, stanza_error()} |
