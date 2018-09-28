@@ -66,18 +66,8 @@
 
 -spec(stanza_to_payload(message()) -> [{atom(), any()}]).
 
-stanza_to_payload(#message{id = Id, body = [#text{data=CData}|_], from = From}) ->
-    Plist = [{body, case size(CData) of
-                        S when S >= 1024 ->
-                            %% Truncate messages as you can't fit too much data into one push
-                            binary_part(CData, 1024);
-                        _ -> CData end},
-             {from, jid:encode(From)}],
-    case Id of
-        <<"">> -> Plist;
-        _ -> [{id, Id}|Plist]
-    end;
-stanza_to_payload(_) -> ignore.
+stanza_to_payload(#message{id = Id}) -> [{id, Id}];
+stanza_to_payload(_) -> [].
 
 -spec(dispatch(pushoff_registration(), [{atom(), any()}]) -> ok).
 
@@ -97,18 +87,15 @@ dispatch(#pushoff_registration{bare_jid = UserBare, token = Token, timestamp = T
 -spec(offline_message({atom(), message()}) -> {atom(), message()}).
 
 offline_message({_, #message{to = To} = Stanza} = Acc) ->
-    case stanza_to_payload(Stanza) of
-        ignore -> ok;
-        Payload ->
-            case mod_pushoff_mnesia:list_registrations(To) of
-                {registrations, []} ->
-                    ?DEBUG("~p is not_subscribed", [To]),
-                    Acc;
-                {registrations, [Reg]} ->
-                    dispatch(Reg, Payload),
-                    Acc;
-                {error, _} -> Acc
-            end
+    Payload = stanza_to_payload(Stanza),
+    case mod_pushoff_mnesia:list_registrations(To) of
+        {registrations, []} ->
+            ?DEBUG("~p is not_subscribed", [To]),
+            Acc;
+        {registrations, Rs} ->
+            [dispatch(R, Payload) || R <- Rs],
+            Acc;
+        {error, _} -> Acc
     end.
 
 
