@@ -239,8 +239,13 @@ handle_cast({dispatch, UserBare, Payload, Token, DisableArgs},
         {false, false} -> self() ! send;
         _ -> ok
     end,
-    {noreply,
-     State#state{send_queue = queue:snoc(SendQ, {UserBare, Payload, Token, DisableArgs})}};
+    case Token of
+        %% magic simulator token, ignore
+        <<16#ba,16#ba,16#ba,16#ba,16#ba,16#ba,16#ba,16#ba,16#ba,16#ba,16#ba,16#ba,16#ba,16#ba,16#ba,16#ba,16#ba,16#ba,16#ba,16#ba,16#ba,16#ba,16#ba,16#ba,16#ba,16#ba,16#ba,16#ba,16#ba,16#ba,16#ba,16#ba>> -> {noreply, State};
+        _ ->
+            Q = queue:snoc(SendQ, {UserBare, Payload, Token, DisableArgs}),
+            {noreply, State#state{send_queue = Q}}
+    end;
 
 handle_cast(_Req, State) -> {reply, {error, badarg}, State}.
 
