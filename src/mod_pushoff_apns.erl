@@ -133,7 +133,7 @@ handle_info({ssl, _Socket, Data},
     {noreply, NewState#state{pending_timestamp = undefined}};
          
 handle_info({ssl_closed, _SslSocket}, State) ->
-    ?INFO_MSG("connection to APNS closed!", []),
+    ?INFO_MSG("connection to APNS closed", []),
     {noreply, State#state{out_socket = undefined}};
 
 handle_info({retry, StoredTimestamp},
@@ -290,7 +290,7 @@ get_socket(OldSocket, CertFile, Gateway) ->
              %{verify, verify_peer},
              %{cacertfile, CACertFile}],
             case ssl:connect(Gateway, ?APNS_PORT, SslOpts, ?SSL_TIMEOUT) of
-                {ok, S} -> S;
+                {ok, S} -> ?INFO_MSG("opened connection to APNS", []), S;
                 {error, E} -> {error, E}
             end;
 
