@@ -1,6 +1,6 @@
 # mod_pushoff
 
-mod_pushoff relays offline messages as push notifications.
+mod_pushoff sends empty push notifications for messages in ejabberd's offline queue.
 
 Supported backends:
 - `mod_pushoff_apns`: [Apple Legacy APNS Binary Provider API](https://developer.apple.com/library/content/documentation/NetworkingInternet/Conceptual/RemoteNotificationsPG/BinaryProviderAPI.html#//apple_ref/doc/uid/TP40008194-CH13-SW1)
@@ -82,14 +82,14 @@ Clients can register for push notifications by sending XEP-0004 adhoc requests.
 
 These are the available adhoc commands:
 
-* `register-push-apns`: register at an APNS backend
-* `register-push-fcm`: register at an FCM backend
-* `list-push-registrations`: request a list of all registrations of the requesting user
-* `unregister-push`: delete the user's registrations
+* `register-push-apns`: register with APNS
+* `register-push-fcm`: register with Firebase
+* `list-push-registrations`: request a list of all registrations
+* `unregister-push`: delete all user's registrations
 
 Example (note, `to='localhost'` contain the your user's server name):
 ```xml
-<iq type='set' to='localhost' id='execute'>
+<iq type='set' to='localhost' id='randomrandomrequestid'>
   <command xmlns='http://jabber.org/protocol/commands'
            node='register-push-apns'
            action='execute'>
