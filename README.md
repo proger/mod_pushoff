@@ -96,7 +96,7 @@ Example (note, `to='localhost'` contain the your user's server name):
     <x xmlns='jabber:x:data' type='submit'>
       <field
       var='token'>
-        <value>r3qpHKmzZHjYKYbG7yI4fhY+DWKqFZE5ZJEM8P+lDDo=</value>
+        <value>urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6uro=</value>
       </field>
     </x>
   </command>
@@ -104,6 +104,9 @@ Example (note, `to='localhost'` contain the your user's server name):
 ```
 
 See [client.py](client.py) for a reference client.
+
+You can use `babababababababababababababababababababababababababababababababa` (`urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6uro=` in base64) token to test APNS.
+`mod_pushoff` does not send messages to devices registered using that token.
 
 ## History
 
