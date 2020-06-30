@@ -128,6 +128,7 @@ if __name__ == '__main__':
     except AttributeError:
         usage()
 
+    # address=(host, port)
     xmpp.connect(reattempt=False, use_ssl=False, use_tls=False)
     try:
         xmpp.process(block=True, send_close=False)
