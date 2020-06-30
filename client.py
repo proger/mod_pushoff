@@ -35,7 +35,11 @@ class Jabber(ClientXMPP):
         self.send_message(mto=to, mbody=msg)
         self.disconnect(wait=True)
 
-    def register_push_apns(self, token):
+    def register_push_apns(self, token, ref=None):
+        if ref:
+            ref_payload = "<field var='backend_ref'><value>%s</value></field>" % ref
+        else:
+            ref_payload = ""
         self['xep_0050'].start_command(jid=self.__server,
                                        node='register-push-apns',
                                        session={
@@ -44,11 +48,16 @@ class Jabber(ClientXMPP):
                                            'id': 'execute',
                                            'payload': [ET.fromstring("""
                                            <x xmlns='jabber:x:data' type='submit'>
-                                           <field var='token'> <value>%s</value> </field>
-                                           </x>""" % hextobase64(token))]
+                                           %s<field var='token'><value>%s</value></field>
+                                           </x>""" % (ref_payload, hextobase64(token)))]
                                        })
 
-    def register_push_fcm(self, token):
+
+    def register_push_fcm(self, token, ref=None):
+        if ref:
+            ref_payload = "<field var='backend_ref'><value>%s</value></field>" % ref
+        else:
+            ref_payload = ""
         self['xep_0050'].start_command(jid=self.__server,
                                        node='register-push-fcm',
                                        session={
@@ -57,8 +66,8 @@ class Jabber(ClientXMPP):
                                            'id': 'execute',
                                            'payload': [ET.fromstring("""
                                            <x xmlns='jabber:x:data' type='submit'>
-                                           <field var='token'> <value>%s</value> </field>
-                                           </x>""" % token)]
+                                           %s<field var='token'><value>%s</value></field>
+                                           </x>""" % (ref_payload, token))]
                                        })
 
     def list_push_registrations(self):
@@ -91,8 +100,8 @@ class Jabber(ClientXMPP):
 
 def usage():
     print >>sys.stderr, 'usage: client.py jid password text jid msg'
-    print >>sys.stderr, 'usage: client.py jid password register-push-apns token'
-    print >>sys.stderr, 'usage: client.py jid password register-push-fcm token'
+    print >>sys.stderr, 'usage: client.py jid password register-push-apns token [backend_ref]'
+    print >>sys.stderr, 'usage: client.py jid password register-push-fcm token [backend_ref]'
     print >>sys.stderr, 'usage: client.py jid password list-push-registrations'
     print >>sys.stderr, 'usage: client.py jid password unregister-push'
     sys.exit(1)
