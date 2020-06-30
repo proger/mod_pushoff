@@ -188,8 +188,6 @@ adhoc_perform_action(_, _, _) ->
 -spec(start(Host :: binary(), Opts :: [any()]) -> any()).
 
 start(Host, Opts) ->
-    ?DEBUG("mod_pushoff:start(~p, ~p), pid=~p", [Host, Opts, self()]),
-
     mod_pushoff_mnesia:create(),
 
     ok = ejabberd_hooks:add(remove_user, Host, ?MODULE, remove_user, 50),
@@ -197,7 +195,7 @@ start(Host, Opts) ->
     ok = ejabberd_hooks:add(adhoc_local_commands, Host, ?MODULE, adhoc_local_commands, 75),
 
     Results = [start_worker(Host, B) || B <- proplists:get_value(backends, Opts)],
-    ?INFO_MSG("++++++++ mod_pushoff:start(~p, ~p): workers ~p", [Host, Opts, Results]),
+    ?INFO_MSG("mod_pushoff workers: ~p", [Results]),
     ok.
 
 -spec(stop(Host :: binary()) -> any()).

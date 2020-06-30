@@ -48,7 +48,6 @@
          api_key :: string()}).
 
 init([Gateway, ApiKey]) ->
-    ?INFO_MSG("+++++++++ mod_pushoff_fcm:init, gateway <~p>, ApiKey <~p>", [Gateway, ApiKey]),
     inets:start(),
     crypto:start(),
     ssl:start(),
@@ -81,16 +80,16 @@ handle_info(send, #state{send_queue = SendQ,
                          gateway = Gateway,
                          api_key = ApiKey} = State) ->
 
-    NewState = 
+    NewState =
     case mod_pushoff_utils:enqueue_some(SendQ) of
         empty ->
             State#state{send_queue = SendQ};
         {Head, NewSendQ} ->
             HTTPOptions = [],
             Options = [],
-            
+
             {Body, DisableArgs} = pending_element_to_json(Head),
-    
+
             Request = {Gateway, [{"Authorization", ApiKey}], "application/json", Body},
             Response = httpc:request(post, Request, HTTPOptions, Options), %https://firebase.google.com/docs/cloud-messaging/http-server-ref
             case Response of
@@ -111,9 +110,9 @@ handle_info(send, #state{send_queue = SendQ,
                       State#state{send_queue = NewSendQ,
                                   pending_timestamp = Timestamp
                                   };
-    
+
                 {ok, {{_, _, _}, _, ResponseBody}} ->
-                      
+
                       ?DEBUG("non-recoverable FCM error: ~p, delete registration", [ResponseBody]),
                       NewRetryList = pending_to_retry(Head, RetryList),
                       {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
@@ -121,7 +120,7 @@ handle_info(send, #state{send_queue = SendQ,
                                   send_queue = NewSendQ,
                                   retry_timer = NewRetryTimer,
                                   retry_timestamp = Timestamp};
-    
+
                 {error, Reason} ->
                       ?ERROR_MSG("FCM request failed: ~p, retrying...", [Reason]),
                       NewRetryList = pending_to_retry(Head, RetryList),

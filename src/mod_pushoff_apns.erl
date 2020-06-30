@@ -63,7 +63,6 @@
          gateway :: string()}).
 
 init([CertFile, Gateway]) ->
-    ?INFO_MSG("+++++++++ mod_pushoff_apns:init, certfile = ~p, gateway ~p", [CertFile, Gateway]),
     inets:start(),
     crypto:start(),
     ssl:start(),
@@ -131,7 +130,7 @@ handle_info({ssl, _Socket, Data},
     end,
     self() ! send,
     {noreply, NewState#state{pending_timestamp = undefined}};
-         
+
 handle_info({ssl_closed, _SslSocket}, State) ->
     ?INFO_MSG("connection to APNS closed", []),
     {noreply, State#state{out_socket = undefined}};
