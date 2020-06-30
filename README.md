@@ -67,13 +67,24 @@ modules:
         type: apns
         # make sure this pem file contains only one(!) certificate + key pair
         certfile: "/etc/ssl/private/apns_example_app.pem"
-        # sandbox is for testing
         gateway: "gateway.push.apple.com"
-        #gateway: "gateway.sandbox.push.apple.com"
+      -
+        type: apns
+        # you can add more backends of each type by specifying backend_ref with unique names
+        backend_ref: "sandbox"
+        # make sure this pem file contains only one(!) certificate + key pair
+        certfile: "/etc/ssl/private/apns_example_app_sandbox.pem"
+        gateway: "gateway.sandbox.push.apple.com"
       -
         type: fcm
         gateway: "https://fcm.googleapis.com/fcm/send"
         api_key: "API_KEY"
+      -
+        type: fcm
+        # you can add more backends of each type by specifying backend_ref with unique names
+        backend_ref: "fcm2"
+        gateway: "https://fcm.googleapis.com/fcm/send"
+        api_key: "API_KEY_2"
 ```
 
 ## Client Applications
@@ -94,14 +105,33 @@ Example (note, `to='localhost'` contain the your user's server name):
            node='register-push-apns'
            action='execute'>
     <x xmlns='jabber:x:data' type='submit'>
-      <field
-      var='token'>
+      <field var='token'>
         <value>urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6uro=</value>
       </field>
     </x>
   </command>
 </iq>
 ```
+
+You need to specify a `backend_ref` field to route your subscription to a particular backend:
+
+```xml
+<iq type='set' to='localhost' id='randomrandomrequestid2'>
+  <command xmlns='http://jabber.org/protocol/commands'
+           node='register-push-apns'
+           action='execute'>
+    <x xmlns='jabber:x:data' type='submit'>
+      <field var='backend_ref'>
+        <value>sandbox</value>
+      </field>
+      <field var='token'>
+        <value>urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6uro=</value>
+      </field>
+    </x>
+  </command>
+</iq>
+```
+
 
 See [client.py](client.py) for a reference client.
 

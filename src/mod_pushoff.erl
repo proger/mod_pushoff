@@ -55,7 +55,7 @@
 -type fcm_config() :: #fcm_config{}.
 
 -record(backend_config,
-        {type :: backend_type(),
+        {ref :: backend_ref(),
          config :: apns_config() | fcm_config()}).
 
 -type backend_config() :: #backend_config{}.
@@ -145,18 +145,34 @@ adhoc_local_commands(Acc, _From, _To, _Request) ->
 
 
 adhoc_perform_action(<<"register-push-apns">>, #jid{lserver = LServer} = From, XData) ->
-    case xmpp_util:get_xdata_values(<<"token">>, XData) of
-        [Base64Token] ->
-            case catch base64:decode(Base64Token) of
-                {'EXIT', _} -> {error, xmpp:err_bad_request()};
-                Token -> mod_pushoff_mnesia:register_client(From, {LServer, apns}, Token)
-            end;
-        _ -> {error, xmpp:err_bad_request()}
+    BackendRef = case xmpp_util:get_xdata_values(<<"backend_ref">>, XData) of
+        [Key] -> {apns, Key};
+        _ -> apns
+    end,
+    case validate_backend_ref(LServer, BackendRef) of
+        {error, E} -> {error, E};
+        {ok, BackendRef} ->
+            case xmpp_util:get_xdata_values(<<"token">>, XData) of
+                [Base64Token] ->
+                    case catch base64:decode(Base64Token) of
+                        {'EXIT', _} -> {error, xmpp:err_bad_request()};
+                        Token -> mod_pushoff_mnesia:register_client(From, {LServer, BackendRef}, Token)
+                    end;
+                _ -> {error, xmpp:err_bad_request()}
+            end
     end;
 adhoc_perform_action(<<"register-push-fcm">>, #jid{lserver = LServer} = From, XData) ->
-    case xmpp_util:get_xdata_values(<<"token">>, XData) of
-        [AsciiToken] -> mod_pushoff_mnesia:register_client(From, {LServer, fcm}, AsciiToken);
-        _ -> {error, xmpp:err_bad_request()}
+    BackendRef = case xmpp_util:get_xdata_values(<<"backend_ref">>, XData) of
+        [Key] -> {fcm, Key};
+        _ -> fcm
+    end,
+    case validate_backend_ref(LServer, BackendRef) of
+        {error, E} -> {error, E};
+        {ok, BackendRef} ->
+            case xmpp_util:get_xdata_values(<<"token">>, XData) of
+                [AsciiToken] -> mod_pushoff_mnesia:register_client(From, {LServer, BackendRef}, AsciiToken);
+                _ -> {error, xmpp:err_bad_request()}
+            end
     end;
 adhoc_perform_action(<<"unregister-push">>, From, _) ->
     mod_pushoff_mnesia:unregister_client(From, undefined);
@@ -172,8 +188,6 @@ adhoc_perform_action(_, _, _) ->
 -spec(start(Host :: binary(), Opts :: [any()]) -> any()).
 
 start(Host, Opts) ->
-    ?DEBUG("mod_pushoff:start(~p, ~p), pid=~p", [Host, Opts, self()]),
-
     mod_pushoff_mnesia:create(),
 
     ok = ejabberd_hooks:add(remove_user, Host, ?MODULE, remove_user, 50),
@@ -181,7 +195,7 @@ start(Host, Opts) ->
     ok = ejabberd_hooks:add(adhoc_local_commands, Host, ?MODULE, adhoc_local_commands, 75),
 
     Results = [start_worker(Host, B) || B <- proplists:get_value(backends, Opts)],
-    ?INFO_MSG("++++++++ mod_pushoff:start(~p, ~p): workers ~p", [Host, Opts, Results]),
+    ?INFO_MSG("mod_pushoff workers: ~p", [Results]),
     ok.
 
 -spec(stop(Host :: binary()) -> any()).
@@ -193,10 +207,10 @@ stop(Host) ->
     ok = ejabberd_hooks:delete(remove_user, Host, ?MODULE, remove_user, 50),
 
     [begin
-         Worker = backend_worker({Host, Type}),
+         Worker = backend_worker({Host, Ref}),
          supervisor:terminate_child(ejabberd_gen_mod_sup, Worker),
          supervisor:delete_child(ejabberd_gen_mod_sup, Worker)
-     end || #backend_config{type=Type} <- backend_configs(Host)],
+     end || #backend_config{ref=Ref} <- backend_configs(Host)],
     ok.
 
 depends(_, _) ->
@@ -205,27 +219,33 @@ depends(_, _) ->
 mod_opt_type(backends) -> fun ?MODULE:parse_backends/1;
 mod_opt_type(_) -> [backends].
 
+validate_backend_ref(Host, Ref) ->
+    case [R || #backend_config{ref=R} <- backend_configs(Host), R == Ref] of
+        [R] -> {ok, R};
+        _ -> {error, xmpp:err_bad_request()}
+    end.
+
+backend_ref(apns, undefined) -> apns;
+backend_ref(fcm, undefined) -> fcm;
+backend_ref(apns, K) -> {apns, K};
+backend_ref(fcm, K) -> {fcm, K}.
+
+backend_type({Type, _}) -> Type;
+backend_type(Type) -> Type.
+
 parse_backends(Plists) ->
     [parse_backend(Plist) || Plist <- Plists].
 
 parse_backend(Opts) ->
-    RawType = proplists:get_value(type, Opts),
-    Type =
-        case lists:member(RawType, [apns, fcm]) of
-            true -> RawType
-        end,
-    Gateway = proplists:get_value(gateway, Opts),
-    CertFile = proplists:get_value(certfile, Opts),
-    ApiKey = proplists:get_value(api_key, Opts),
-
+    Ref = backend_ref(proplists:get_value(type, Opts), proplists:get_value(backend_ref, Opts)),
     #backend_config{
-       type = Type,
+       ref = Ref,
        config =
-           case Type of
+           case backend_type(Ref) of
                apns ->
-                   #apns_config{certfile = CertFile, gateway = Gateway};
+                   #apns_config{certfile = proplists:get_value(certfile, Opts), gateway = proplists:get_value(gateway, Opts)};
                fcm ->
-                   #fcm_config{gateway = Gateway, api_key = ApiKey}
+                   #fcm_config{gateway = proplists:get_value(gateway, Opts), api_key = proplists:get_value(api_key, Opts)}
            end
       }.
 
@@ -235,32 +255,33 @@ parse_backend(Opts) ->
 
 -spec(backend_worker(backend_id()) -> atom()).
 
-backend_worker({Host, Type}) -> gen_mod:get_module_proc(Host, Type).
+backend_worker({Host, {T, R}}) -> gen_mod:get_module_proc(Host, binary_to_atom(<<(erlang:atom_to_binary(T, latin1))/binary, "_", R/binary>>, latin1));
+backend_worker({Host, Ref}) -> gen_mod:get_module_proc(Host, Ref).
 
 backend_configs(Host) ->
     gen_mod:get_module_opt(Host, ?MODULE, backends,
                            fun(O) when is_list(O) -> O end, []).
 
+backend_module(apns) -> ?MODULE_APNS;
+backend_module(fcm) -> ?MODULE_FCM.
+
 -spec(start_worker(Host :: binary(), Backend :: backend_config()) -> ok).
 
-start_worker(Host, #backend_config{type = Type, config = TypeConfig}) ->
-    Module = proplists:get_value(Type, [{apns, ?MODULE_APNS}, {fcm, ?MODULE_FCM}]),
-    Worker = backend_worker({Host, Type}),
-    BackendSpec = 
-    case Type of
+start_worker(Host, #backend_config{ref = Ref, config = Config}) ->
+    Worker = backend_worker({Host, Ref}),
+    BackendSpec =
+    case backend_type(Ref) of
         apns ->
                   {Worker,
                    {gen_server, start_link,
-                    [{local, Worker}, Module,
-                     %% TODO: mb i should send one record like BackendConfig#backend_config.config and parse it in each module
-                     [TypeConfig#apns_config.certfile, TypeConfig#apns_config.gateway], []]},
+                    [{local, Worker}, backend_module(backend_type(Ref)),
+                     [Config#apns_config.certfile, Config#apns_config.gateway], []]},
                    permanent, 1000, worker, [?MODULE]};
         fcm ->
                   {Worker,
                    {gen_server, start_link,
-                    [{local, Worker}, Module,
-                     %% TODO: mb i should send one record like BackendConfig#backend_config.config and parse it in each module
-                     [TypeConfig#fcm_config.gateway, TypeConfig#fcm_config.api_key], []]},
+                    [{local, Worker}, backend_module(backend_type(Ref)),
+                     [Config#fcm_config.gateway, Config#fcm_config.api_key], []]},
                    permanent, 1000, worker, [?MODULE]}
     end,
 

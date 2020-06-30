@@ -33,7 +33,6 @@
                   -> {[any()], queue:queue(any()), pos_integer()}.
 
 enqueue_some(PendingList, SendQ, MessageId, MaxPendingNotifications) ->
-    ?INFO_MSG("enqueue_some(), PendingList = <~p>, SendQ = <~p>, MessageId = <~p>, MaxPendingNotifications = <~p>", [PendingList, SendQ, MessageId, MaxPendingNotifications]),
     PendingSpace = MaxPendingNotifications - length(PendingList),
     {NewPendingElements, NewSendQ} =
         case queue:len(SendQ) > PendingSpace of
