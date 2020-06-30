@@ -94,35 +94,34 @@ handle_info(send, #state{send_queue = SendQ,
             Response = httpc:request(post, Request, HTTPOptions, Options), %https://firebase.google.com/docs/cloud-messaging/http-server-ref
             case Response of
                 {ok, {{_, StatusCode5xx, _}, _, ErrorBody5xx}} when StatusCode5xx >= 500, StatusCode5xx < 600 ->
-                      ?DEBUG("recoverable FCM error: ~p, retrying...", [ErrorBody5xx]),
+                      ?INFO_MSG("recoverable error: ~p, retrying...", [ErrorBody5xx]),
                       NewRetryList = pending_to_retry(Head, RetryList),
                       {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
                       State#state{retry_list = NewRetryList,
                                   send_queue = NewSendQ,
                                   retry_timer = NewRetryTimer,
                                   retry_timestamp = Timestamp};
+
                 {ok, {{_, 200, _}, _, ResponseBody}} ->
                       case parse_response(ResponseBody) of
                           ok -> ok;
-                          _ -> mod_pushoff_mnesia:unregister_client(DisableArgs)
+                          E ->
+                              ?ERROR_MSG("error: ~p, deleting registration", [E]),
+                              mod_pushoff_mnesia:unregister_client(DisableArgs)
                       end,
                       Timestamp = erlang:timestamp(),
                       State#state{send_queue = NewSendQ,
-                                  pending_timestamp = Timestamp
-                                  };
+                                  pending_timestamp = Timestamp};
 
                 {ok, {{_, _, _}, _, ResponseBody}} ->
-
-                      ?DEBUG("non-recoverable FCM error: ~p, delete registration", [ResponseBody]),
-                      NewRetryList = pending_to_retry(Head, RetryList),
-                      {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
-                      State#state{retry_list = NewRetryList,
-                                  send_queue = NewSendQ,
-                                  retry_timer = NewRetryTimer,
-                                  retry_timestamp = Timestamp};
+                      ?ERROR_MSG("error: ~p, deleting registration", [ResponseBody]),
+                      mod_pushoff_mnesia:unregister_client(DisableArgs),
+                      Timestamp = erlang:timestamp(),
+                      State#state{send_queue = NewSendQ,
+                                  pending_timestamp = Timestamp};
 
                 {error, Reason} ->
-                      ?ERROR_MSG("FCM request failed: ~p, retrying...", [Reason]),
+                      ?ERROR_MSG("request failed: ~p, retrying...", [Reason]),
                       NewRetryList = pending_to_retry(Head, RetryList),
                       {NewRetryTimer, Timestamp} = restart_retry_timer(RetryTimer),
                       State#state{retry_list = NewRetryList,
@@ -183,19 +182,12 @@ pending_element_to_json(_) ->
     unknown.
 
 parse_response(ResponseBody) ->
-    {JsonData} = jiffy:decode(ResponseBody),
-    case proplists:get_value(<<"success">>, JsonData) of
-        1 ->
-            ok;
-        0 ->
-            [{Result}] = proplists:get_value(<<"results">>, JsonData),
-            case proplists:get_value(<<"error">>, Result) of
-                <<"NotRegistered">> ->
-                    ?ERROR_MSG("FCM error: NotRegistered, unregistered user", []),
-                    not_registered;
-                <<"InvalidRegistration">> ->
-                    ?ERROR_MSG("FCM error: InvalidRegistration, unregistered user", []),
-                    invalid_registration;
-                _ -> other
-            end
-    end.
+    try jiffy:decode(ResponseBody) of
+        {JsonData} ->
+            case proplists:get_value(<<"success">>, JsonData) of
+                1 -> ok;
+                0 -> [{Result}] = proplists:get_value(<<"results">>, JsonData),
+                     {error, proplists:get_value(<<"error">>, Result)}
+            end;
+        Bad -> {error, Bad}
+    catch throw:E -> E end.
