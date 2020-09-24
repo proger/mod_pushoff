@@ -3,7 +3,7 @@
 mod_pushoff sends empty push notifications for messages in ejabberd's offline queue.
 
 Supported backends:
-- `mod_pushoff_apns`: [Apple Legacy APNS Binary Provider API](https://developer.apple.com/library/content/documentation/NetworkingInternet/Conceptual/RemoteNotificationsPG/BinaryProviderAPI.html#//apple_ref/doc/uid/TP40008194-CH13-SW1)
+- `mod_pushoff_apns_h2`: [Apple APNs over http/2](https://developer.apple.com/documentation/usernotifications/setting_up_a_remote_notification_server/sending_notification_requests_to_apns)
 - `mod_pushoff_fcm`: [Google Firebase Cloud Messaging HTTP Protocol](https://firebase.google.com/docs/cloud-messaging/http-server-ref)
 
 ## Prerequisites
@@ -64,23 +64,24 @@ modules:
   mod_pushoff:
     backends:
       -
-        type: apns
+        type: mod_pushoff_apns # deprecated
         # make sure this pem file contains only one(!) certificate + key pair
         certfile: "/etc/ssl/private/apns_example_app.pem"
         gateway: "gateway.push.apple.com"
       -
-        type: apns
+        type: mod_pushoff_apns_h2
         # you can add more backends of each type by specifying backend_ref with unique names
         backend_ref: "sandbox"
         # make sure this pem file contains only one(!) certificate + key pair
         certfile: "/etc/ssl/private/apns_example_app_sandbox.pem"
         gateway: "gateway.sandbox.push.apple.com"
+        topic: "com.acme.your.app" # this should be your bundle id
       -
-        type: fcm
+        type: mod_pushoff_fcm
         gateway: "https://fcm.googleapis.com/fcm/send"
         api_key: "API_KEY"
       -
-        type: fcm
+        type: mod_pushoff_fcm
         # you can add more backends of each type by specifying backend_ref with unique names
         backend_ref: "fcm2"
         gateway: "https://fcm.googleapis.com/fcm/send"
@@ -94,6 +95,7 @@ Clients can register for push notifications by sending XEP-0004 adhoc requests.
 These are the available adhoc commands:
 
 * `register-push-apns`: register with APNS
+* `register-push-apns-h2`: register with APNS/h2
 * `register-push-fcm`: register with Firebase
 * `list-push-registrations`: request a list of all registrations
 * `unregister-push`: delete all user's registrations
@@ -113,7 +115,7 @@ Example (note, `to='localhost'` contain the your user's server name):
 </iq>
 ```
 
-You need to specify a `backend_ref` field to route your subscription to a particular backend:
+You need to specify a `backend_ref` field to route your subscription to a particular backend (this is always the case for `mod_pushoff_apns_h2`):
 
 ```xml
 <iq type='set' to='localhost' id='randomrandomrequestid2'>

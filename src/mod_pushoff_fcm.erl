@@ -47,7 +47,7 @@
          gateway :: string(),
          api_key :: string()}).
 
-init([Gateway, ApiKey]) ->
+init(#{backend_type := ?MODULE, gateway := Gateway, api_key := ApiKey}) ->
     inets:start(),
     crypto:start(),
     ssl:start(),

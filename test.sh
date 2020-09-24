@@ -6,7 +6,7 @@ set -x -e
 mkdir -p .ejabberd-modules/sources
 cp -R mod_pushoff .ejabberd-modules/sources
 bin/ejabberdctl start
-sleep 3
+sleep 10
 bin/ejabberdctl module_install mod_pushoff
 bin/ejabberdctl register testuser1 localhost pass123
 bin/ejabberdctl register testuser2 localhost pass123

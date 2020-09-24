@@ -62,7 +62,7 @@
          message_id :: pos_integer(),
          gateway :: string()}).
 
-init([CertFile, Gateway]) ->
+init(#{backend_type := ?MODULE, certfile := CertFile, gateway := Gateway}) ->
     inets:start(),
     crypto:start(),
     ssl:start(),

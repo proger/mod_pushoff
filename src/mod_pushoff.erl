@@ -35,30 +35,11 @@
 
 -include("mod_pushoff.hrl").
 
--define(MODULE_APNS, mod_pushoff_apns).
--define(MODULE_FCM, mod_pushoff_fcm).
 -define(OFFLINE_HOOK_PRIO, 1). % must fire before mod_offline (which has 50)
 
-%
-% types
-%
-
--record(apns_config,
-        {certfile = <<"">> :: binary(),
-         gateway = <<"">> :: binary()}).
-
--record(fcm_config,
-        {gateway = <<"">> :: binary(),
-         api_key = <<"">> :: binary()}).
-
--type apns_config() :: #apns_config{}.
--type fcm_config() :: #fcm_config{}.
-
--record(backend_config,
-        {ref :: backend_ref(),
-         config :: apns_config() | fcm_config()}).
-
--type backend_config() :: #backend_config{}.
+-type apns_config() :: #{backend_type := mod_pushoff_apns_h2, certfile := binary(), gateway := binary(), topic := binary()}.
+-type fcm_config() :: #{backend_type := mod_pushoff_fcm, gateway := binary(), api_key := binary()}.
+-type backend_config() :: #{ref := backend_ref(), config := apns_config() | fcm_config()}.
 
 %
 % dispatch to workers
@@ -75,8 +56,7 @@ dispatch(#pushoff_registration{bare_jid = UserBare, token = Token, timestamp = T
                                backend_id = BackendId},
          Payload) ->
     DisableArgs = {UserBare, Timestamp},
-    gen_server:cast(backend_worker(BackendId),
-                    {dispatch, UserBare, Payload, Token, DisableArgs}),
+    gen_server:cast(backend_worker(BackendId), {dispatch, UserBare, Payload, Token, DisableArgs}),
     ok.
 
 
@@ -144,10 +124,27 @@ adhoc_local_commands(Acc, _From, _To, _Request) ->
     Acc.
 
 
+adhoc_perform_action(<<"register-push-apns-h2">>, #jid{lserver = LServer} = From, XData) ->
+    BackendRef = case xmpp_util:get_xdata_values(<<"backend_ref">>, XData) of
+        [Key] -> {mod_pushoff_apns_h2, Key};
+        _ -> undefined
+    end,
+    case validate_backend_ref(LServer, BackendRef) of
+        {error, E} -> {error, E};
+        {ok, BackendRef} ->
+            case xmpp_util:get_xdata_values(<<"token">>, XData) of
+                [Base64Token] ->
+                    case catch base64:decode(Base64Token) of
+                        {'EXIT', _} -> {error, xmpp:err_bad_request()};
+                        Token -> mod_pushoff_mnesia:register_client(From, {LServer, BackendRef}, Token)
+                    end;
+                _ -> {error, xmpp:err_bad_request()}
+            end
+    end;
 adhoc_perform_action(<<"register-push-apns">>, #jid{lserver = LServer} = From, XData) ->
     BackendRef = case xmpp_util:get_xdata_values(<<"backend_ref">>, XData) of
-        [Key] -> {apns, Key};
-        _ -> apns
+        [Key] -> {mod_pushoff_apns, Key};
+        _ -> mod_pushoff_apns
     end,
     case validate_backend_ref(LServer, BackendRef) of
         {error, E} -> {error, E};
@@ -210,7 +207,7 @@ stop(Host) ->
          Worker = backend_worker({Host, Ref}),
          supervisor:terminate_child(ejabberd_gen_mod_sup, Worker),
          supervisor:delete_child(ejabberd_gen_mod_sup, Worker)
-     end || #backend_config{ref=Ref} <- backend_configs(Host)],
+     end || #{ref := Ref} <- backend_configs(Host)],
     ok.
 
 depends(_, _) ->
@@ -220,15 +217,13 @@ mod_opt_type(backends) -> fun ?MODULE:parse_backends/1;
 mod_opt_type(_) -> [backends].
 
 validate_backend_ref(Host, Ref) ->
-    case [R || #backend_config{ref=R} <- backend_configs(Host), R == Ref] of
+    case [R || #{ref := R} <- backend_configs(Host), R == Ref] of
         [R] -> {ok, R};
         _ -> {error, xmpp:err_bad_request()}
     end.
 
-backend_ref(apns, undefined) -> apns;
-backend_ref(fcm, undefined) -> fcm;
-backend_ref(apns, K) -> {apns, K};
-backend_ref(fcm, K) -> {fcm, K}.
+backend_ref(X, undefined) -> X;
+backend_ref(X, K) -> {X, K}.
 
 backend_type({Type, _}) -> Type;
 backend_type(Type) -> Type.
@@ -236,18 +231,22 @@ backend_type(Type) -> Type.
 parse_backends(Plists) ->
     [parse_backend(Plist) || Plist <- Plists].
 
+-spec(parse_backend(proplist:proplist()) -> backend_config()).
 parse_backend(Opts) ->
     Ref = backend_ref(proplists:get_value(type, Opts), proplists:get_value(backend_ref, Opts)),
-    #backend_config{
-       ref = Ref,
-       config =
-           case backend_type(Ref) of
-               apns ->
-                   #apns_config{certfile = proplists:get_value(certfile, Opts), gateway = proplists:get_value(gateway, Opts)};
-               fcm ->
-                   #fcm_config{gateway = proplists:get_value(gateway, Opts), api_key = proplists:get_value(api_key, Opts)}
-           end
-      }.
+    #{ref => Ref,
+      config =>
+         case backend_type(Ref) of
+             mod_pushoff_fcm ->
+                 #{backend_type => mod_pushoff_fcm,
+                   gateway => proplists:get_value(gateway, Opts),
+                   api_key => proplists:get_value(api_key, Opts)};
+             X when X == mod_pushoff_apns orelse X == mod_pushoff_apns_h2 ->
+                 #{backend_type => X,
+                   certfile => proplists:get_value(certfile, Opts),
+                   gateway => proplists:get_value(gateway, Opts),
+                   topic => proplists:get_value(topic, Opts)}
+         end}.
 
 %
 % workers
@@ -262,29 +261,14 @@ backend_configs(Host) ->
     gen_mod:get_module_opt(Host, ?MODULE, backends,
                            fun(O) when is_list(O) -> O end, []).
 
-backend_module(apns) -> ?MODULE_APNS;
-backend_module(fcm) -> ?MODULE_FCM.
-
 -spec(start_worker(Host :: binary(), Backend :: backend_config()) -> ok).
 
-start_worker(Host, #backend_config{ref = Ref, config = Config}) ->
+start_worker(Host, #{ref := Ref, config := Config}) ->
     Worker = backend_worker({Host, Ref}),
-    BackendSpec =
-    case backend_type(Ref) of
-        apns ->
-                  {Worker,
+    BackendSpec = {Worker,
                    {gen_server, start_link,
-                    [{local, Worker}, backend_module(backend_type(Ref)),
-                     [Config#apns_config.certfile, Config#apns_config.gateway], []]},
-                   permanent, 1000, worker, [?MODULE]};
-        fcm ->
-                  {Worker,
-                   {gen_server, start_link,
-                    [{local, Worker}, backend_module(backend_type(Ref)),
-                     [Config#fcm_config.gateway, Config#fcm_config.api_key], []]},
-                   permanent, 1000, worker, [?MODULE]}
-    end,
-
+                    [{local, Worker}, backend_type(Ref), Config, []]},
+                   permanent, 1000, worker, [?MODULE]},
     supervisor:start_child(ejabberd_gen_mod_sup, BackendSpec).
 
 %

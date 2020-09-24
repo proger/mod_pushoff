@@ -744,12 +744,12 @@ modules:
   mod_pushoff:
     backends:
       -
-        type: fcm
+        type: mod_pushoff_fcm
         backend_ref: "ref1"
         gateway: "https://fcm.googleapis.com/fcm/send"
         api_key: "API_KEY"
       -
-        type: fcm
+        type: mod_pushoff_fcm
         backend_ref: "ref2"
         gateway: "https://fcm.googleapis.com/fcm/send"
         api_key: "API_KEY_2"
