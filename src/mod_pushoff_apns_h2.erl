@@ -34,7 +34,7 @@
       sending := sending()}.
 
 init(#{backend_type := ?MODULE, certfile := Certfile, gateway := APNS, topic := Topic}) ->
-    {ok, #{send_queue => queue:new(), connection => undefined, certfile => erlang:binary_to_list(Certfile), apns => APNS, topic => Topic, sending => undefined}}.
+    {ok, #{send_queue => queue:new(), connection => undefined, certfile => erlang:binary_to_list(Certfile), apns => APNS, topic => erlang:iolist_to_binary(Topic), sending => undefined}}.
 
 handle_cast({dispatch, _UserBare, _Payload, Token, _DisableArgs} = M, #{send_queue := Q} = State) ->
     case Token of
@@ -166,7 +166,7 @@ status(<<"503">>) -> server_unavailable.
 
 to_hex(B) -> to_hex(B, []).
 
-to_hex(<<>>, Acc) -> lists:reverse(Acc);
+to_hex(<<>>, Acc) -> erlang:iolist_to_binary(lists:reverse(Acc));
 to_hex(<<C1:4, C2:4, Rest/binary>>, Acc) -> to_hex(Rest, [hexdigit(C2), hexdigit(C1) | Acc]).
 
 %% @spec hexdigit(integer()) -> char()
