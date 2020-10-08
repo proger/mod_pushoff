@@ -268,7 +268,7 @@ backend() ->
         econf:list(econf:any()),
         fun(Val) ->
             case parse_backend(Val) of
-                #backend_config{} ->
+                #{ config := _ } ->
                     Val;
                 _ ->
                     econf:fail(Val)
