@@ -45,11 +45,6 @@
 % dispatch to workers
 %
 
--spec(stanza_to_payload(message()) -> [{atom(), any()}]).
-
-stanza_to_payload(#message{id = Id}) -> [{id, Id}];
-stanza_to_payload(_) -> [].
-
 -spec(dispatch(pushoff_registration(), [{atom(), any()}]) -> ok).
 
 dispatch(#pushoff_registration{bare_jid = UserBare, token = Token, timestamp = Timestamp,
@@ -66,17 +61,17 @@ dispatch(#pushoff_registration{bare_jid = UserBare, token = Token, timestamp = T
 
 -spec(offline_message({atom(), message()}) -> {atom(), message()}).
 
-offline_message({_, #message{to = To} = Stanza} = Acc) ->
-    Payload = stanza_to_payload(Stanza),
+offline_message({_, #message{to = To, id = Id}} = Acc) when byte_size(Id) > 0 ->
     case mod_pushoff_mnesia:list_registrations(To) of
         {registrations, []} ->
             ?DEBUG("~p is not_subscribed", [To]),
             Acc;
         {registrations, Rs} ->
-            [dispatch(R, Payload) || R <- Rs],
+            [dispatch(R, [{id, Id}]) || R <- Rs],
             Acc;
         {error, _} -> Acc
-    end.
+    end;
+offline_message(Acc) -> Acc.
 
 
 -spec(remove_user(User :: binary(), Server :: binary()) ->
