@@ -144,14 +144,16 @@ response_status([{<<":status">>, Status}|_] = Headers, Data) ->
 post(Host, Path) ->
     [{<<":method">>,<<"POST">>}, {<<":scheme">>,<<"https">>}, {<<":authority">>,Host}, {<<":path">>,Path}].
 
-alert_headers(APNS, Topic, RawToken) ->
+alert_headers(APNS, Topic, RawToken, Id) ->
     Token = to_hex(RawToken),
-    post(APNS, <<"/3/device/", Token/binary>>) ++ [{<<"apns-push-type">>,<<"alert">>}, {<<"apns-topic">>,Topic}, {<<"apns-priority">>,<<"10">>}].
+    post(APNS, <<"/3/device/", Token/binary>>)
+      ++ [{<<"apns-push-type">>,<<"alert">>}, {<<"apns-topic">>,Topic}, {<<"apns-priority">>,<<"10">>},
+          {<<"apns-collapse-id">>,Id}]. %% XXX: max allowed length of Id is 64 bytes, we use commonly use UUIDs with a 4-char prefix
 
 payload(Id) ->
     iolist_to_binary([<<"{ \"aps\" : { \"alert\" : \"Incoming Message\", \"mutable-content\": 1 }, \"message-id\": \"">>, Id, <<"\" }">>]).
 
-make_request(APNS, Topic, {dispatch, _UserBare, [{id, Id}], Token, _DisableArgs}) -> {alert_headers(APNS, Topic, Token), payload(Id)}.
+make_request(APNS, Topic, {dispatch, _UserBare, [{id, Id}], Token, _DisableArgs}) -> {alert_headers(APNS, Topic, Token, Id), payload(Id)}.
 
 % https://developer.apple.com/documentation/usernotifications/setting_up_a_remote_notification_server/handling_notification_responses_from_apns
 status(<<"200">>) -> ok;
