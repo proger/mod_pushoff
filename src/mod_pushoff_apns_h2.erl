@@ -151,7 +151,7 @@ alert_headers(APNS, Topic, RawToken, Id) ->
           {<<"apns-collapse-id">>,Id}]. %% XXX: max allowed length of Id is 64 bytes, we use commonly use UUIDs with a 4-char prefix
 
 payload(Id) ->
-    iolist_to_binary([<<"{ \"aps\" : { \"alert\" : \"Incoming Message\", \"mutable-content\": 1, \"sound\": \"ActiveIncoming.caf\" }, \"message-id\": \"">>, Id, <<"\" }">>]).
+    iolist_to_binary([<<"{ \"aps\" : { \"alert\" : \"Incoming Message\", \"mutable-content\": 1, \"sound\": \"default\" }, \"message-id\": \"">>, Id, <<"\" }">>]).
 
 make_request(APNS, Topic, {dispatch, _UserBare, [{id, Id}], Token, _DisableArgs}) -> {alert_headers(APNS, Topic, Token, Id), payload(Id)}.
 
