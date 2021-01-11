@@ -25,7 +25,7 @@
 -behaviour(gen_mod).
 
 -compile(export_all).
--export([start/2, stop/1, depends/2, mod_opt_type/1, parse_backends/1,
+-export([start/2, stop/1, reload/3, depends/2, mod_options/1, mod_opt_type/1, parse_backends/1,
          offline_message/1, adhoc_local_commands/4, remove_user/2,
          health/0]).
 
@@ -91,8 +91,7 @@ remove_user(User, Server) ->
 
 adhoc_local_commands(Acc, From, To, #adhoc_command{node = Command, action = execute, xdata = XData} = Req) ->
     Host = To#jid.lserver,
-    Access = gen_mod:get_module_opt(Host, ?MODULE, access_backends,
-                                    fun(A) when is_atom(A) -> A end, all),
+    Access = gen_mod:get_module_opt(Host, ?MODULE, access_backends),
     Result = case acl:match_rule(Host, Access, From) of
         deny -> {error, xmpp:err_forbidden()};
         allow -> adhoc_perform_action(Command, From, XData)
@@ -186,7 +185,7 @@ start(Host, Opts) ->
     ok = ejabberd_hooks:add(offline_message_hook, Host, ?MODULE, offline_message, ?OFFLINE_HOOK_PRIO),
     ok = ejabberd_hooks:add(adhoc_local_commands, Host, ?MODULE, adhoc_local_commands, 75),
 
-    Results = [start_worker(Host, B) || B <- proplists:get_value(backends, Opts)],
+    Results = [start_worker(Host, B) || B <- parse_backends(maps:get(backends, Opts))],
     ?INFO_MSG("mod_pushoff workers: ~p", [Results]),
     ok.
 
@@ -205,11 +204,26 @@ stop(Host) ->
      end || #{ref := Ref} <- backend_configs(Host)],
     ok.
 
-depends(_, _) ->
-    [{mod_offline, hard}].
+reload(Host, NewOpts, _OldOpts) ->
+    stop(Host),
+    start(Host, NewOpts),
+    ok.
 
-mod_opt_type(backends) -> fun ?MODULE:parse_backends/1;
-mod_opt_type(_) -> [backends].
+depends(_, _) ->
+    [{mod_offline, hard}, {mod_adhoc, hard}].
+
+% mod_opt_type(backends) -> fun ?MODULE:parse_backends/1;
+mod_opt_type(backends) ->
+    econf:list(
+        backend()
+    );
+mod_opt_type(access_backends) ->
+    econf:acl();
+mod_opt_type(_) -> [backends, access_backends].
+
+mod_options(_Host) ->
+    [{backends, []},
+     {access_backends, all}].
 
 validate_backend_ref(Host, Ref) ->
     case [R || #{ref := R} <- backend_configs(Host), R == Ref] of
@@ -243,6 +257,20 @@ parse_backend(Opts) ->
                    topic => proplists:get_value(topic, Opts)}
          end}.
 
+% -spec backend() -> yconf:validator(jid:jid()).
+backend() ->
+    econf:and_then(
+        econf:list(econf:any()),
+        fun(Val) ->
+            case parse_backend(Val) of
+                #{ config := _ } ->
+                    Val;
+                _ ->
+                    econf:fail(Val)
+            end
+        end). 
+
+
 %
 % workers
 %
@@ -253,8 +281,7 @@ backend_worker({Host, {T, R}}) -> gen_mod:get_module_proc(Host, binary_to_atom(<
 backend_worker({Host, Ref}) -> gen_mod:get_module_proc(Host, Ref).
 
 backend_configs(Host) ->
-    gen_mod:get_module_opt(Host, ?MODULE, backends,
-                           fun(O) when is_list(O) -> O end, []).
+    parse_backends(gen_mod:get_module_opt(Host, ?MODULE, backends)).
 
 -spec(start_worker(Host :: binary(), Backend :: backend_config()) -> ok).
 

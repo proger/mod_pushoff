@@ -1,1 +1,3 @@
 *.beam
+*.iml
+.idea
